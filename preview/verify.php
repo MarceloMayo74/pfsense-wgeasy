@@ -1033,7 +1033,51 @@ check('rows carry delete and toggle actions',
 	(strpos($list_html, 'act=delete&amp;peer=') !== false || strpos($list_html, 'act=delete&peer=') !== false)
 	&& (strpos($list_html, 'act=toggle') !== false));
 
-fwrite(STDOUT, "\n== 19. the dashboard widget ==\n");
+fwrite(STDOUT, "\n== 19. the client file is delivered zipped ==\n");
+
+$zip_name = wgeasy_zip_filename('celular-marcel.conf');
+
+check('the archive name replaces the extension', $zip_name === 'celular-marcel.zip', $zip_name);
+
+$zip = wgeasy_build_zip(array('celular-marcel.conf' => $conf));
+
+check('the archive starts with the local file header signature',
+	substr($zip, 0, 4) === "PK\x03\x04");
+
+check('it ends with the end of central directory record',
+	substr($zip, -22, 4) === "PK\x05\x06");
+
+check('it is larger than the file it carries', strlen($zip) > strlen($conf));
+
+check('the entry name is stored in it', strpos($zip, 'celular-marcel.conf') !== false);
+
+/*
+ * Writing it out and unpacking it with a real tool is the only check that
+ * proves a phone will be able to open it. PHP's own reader is used when the
+ * zip extension is present, otherwise the file is left for the shell to test.
+ */
+$zip_path = WGEASY_PREVIEW_VAR . '/tmp/test.zip';
+
+file_put_contents($zip_path, $zip);
+
+if (class_exists('ZipArchive')) {
+	$archive = new ZipArchive();
+
+	check('a real ZIP reader opens it', $archive->open($zip_path) === true);
+
+	check('it holds exactly one entry', $archive->numFiles === 1);
+
+	check('the entry is the client file', $archive->getNameIndex(0) === 'celular-marcel.conf');
+
+	check('the extracted contents match the original byte for byte',
+		$archive->getFromIndex(0) === $conf);
+
+	$archive->close();
+} else {
+	fwrite(STDOUT, "  note: the zip extension is absent, preview/var/tmp/test.zip left for an external check\n");
+}
+
+fwrite(STDOUT, "\n== 20. the dashboard widget ==\n");
 
 require_once(WGEASY_PREVIEW_WGEASY . '/usr/local/www/widgets/include/wgeasy_peers.inc');
 

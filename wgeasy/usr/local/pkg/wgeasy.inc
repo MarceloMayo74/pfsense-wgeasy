@@ -853,6 +853,91 @@ function wgeasy_conf_filename($descr, $fallback = 'wgclient') {
 }
 
 /*
+ * Wraps files into a ZIP archive.
+ *
+ * Written by hand rather than with ZipArchive, which depends on a PHP
+ * extension that is not guaranteed to be present. Entries are stored
+ * uncompressed: a client file is a few hundred bytes, so compressing it buys
+ * nothing and storing keeps this to plain header writing.
+ *
+ * $files is name => contents.
+ */
+function wgeasy_build_zip($files) {
+	$entries = $central = '';
+
+	$offset = 0;
+
+	$now = getdate();
+
+	// MS-DOS packed time and date, what the format calls for
+	$dostime = ($now['hours'] << 11) | ($now['minutes'] << 5) | ($now['seconds'] >> 1);
+
+	$dosdate = (($now['year'] - 1980) << 9) | ($now['mon'] << 5) | $now['mday'];
+
+	foreach ((array) $files as $name => $content) {
+		$crc = crc32($content);
+
+		$size = strlen($content);
+
+		$local	= "PK\x03\x04"
+			. pack('v', 20)			// version needed to extract
+			. pack('v', 0)			// general purpose flags
+			. pack('v', 0)			// method 0, stored
+			. pack('v', $dostime)
+			. pack('v', $dosdate)
+			. pack('V', $crc)
+			. pack('V', $size)		// compressed size
+			. pack('V', $size)		// uncompressed size
+			. pack('v', strlen($name))
+			. pack('v', 0)			// extra field length
+			. $name;
+
+		$entries .= $local . $content;
+
+		$central .= "PK\x01\x02"
+			. pack('v', 20)			// version made by
+			. pack('v', 20)			// version needed
+			. pack('v', 0)
+			. pack('v', 0)
+			. pack('v', $dostime)
+			. pack('v', $dosdate)
+			. pack('V', $crc)
+			. pack('V', $size)
+			. pack('V', $size)
+			. pack('v', strlen($name))
+			. pack('v', 0)			// extra
+			. pack('v', 0)			// comment
+			. pack('v', 0)			// disk number
+			. pack('v', 0)			// internal attributes
+			. pack('V', 32)			// external attributes, archive
+			. pack('V', $offset)
+			. $name;
+
+		$offset += strlen($local) + $size;
+	}
+
+	$count = count((array) $files);
+
+	$end	= "PK\x05\x06"
+		. pack('v', 0)				// this disk
+		. pack('v', 0)				// disk with central directory
+		. pack('v', $count)
+		. pack('v', $count)
+		. pack('V', strlen($central))
+		. pack('V', $offset)
+		. pack('v', 0);				// comment length
+
+	return $entries . $central . $end;
+}
+
+/*
+ * The archive name matching a client file name
+ */
+function wgeasy_zip_filename($conf_filename) {
+	return preg_replace('/\.conf$/i', '', (string) $conf_filename) . '.zip';
+}
+
+/*
  * Assembles the client side .conf file. The very same file is valid for the
  * Windows, macOS, Linux, Android and iOS clients.
  */

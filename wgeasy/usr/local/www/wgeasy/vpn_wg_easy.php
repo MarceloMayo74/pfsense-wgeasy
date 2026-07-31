@@ -103,7 +103,14 @@ if ($_POST) {
 					break;
 				}
 
-				send_user_download('data', $client_conf, $conf_filename);
+				/*
+				 * Always delivered zipped. Every WireGuard client accepts an
+				 * archive, and a .zip survives being passed around by email or
+				 * a messenger, which a bare .conf often does not.
+				 */
+				send_user_download('data',
+					wgeasy_build_zip(array($conf_filename => $client_conf)),
+					wgeasy_zip_filename($conf_filename));
 				exit;
 
 			case 'getconf':

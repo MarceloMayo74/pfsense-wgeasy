@@ -55,6 +55,30 @@ In practice: type a name, press Save, hand over the file.
 active. This one shows *who*: peer name, tunnel, the address they are connected
 from, when they were last seen, and their traffic counters.
 
+## Getting the file onto the phone
+
+The client file is always downloaded as a `.zip`. Every WireGuard client
+accepts an archive, and a `.zip` survives being emailed or passed through a
+messenger, which a bare `.conf` often does not.
+
+Worth knowing, because it surprises everyone once: **the Android app does not
+register itself as a handler for configuration files**. Tapping the file in
+WhatsApp, Gmail or a file manager will never offer WireGuard, no matter what
+the file is called. Importing always goes through the app itself: **+ → Import
+from file or archive**. On iOS the app does declare the type, so sharing a file
+to it works there.
+
+That leaves three ways to deliver a client, depending on the situation:
+
+| Situation | What to use |
+|---|---|
+| The phone is in front of you and you have a second screen | Scan the QR code |
+| The phone is the device you are configuring | Browse to pfSense from the phone, download the `.zip`, then import it in the app |
+| The user is somewhere else | Email or messenger, and tell them to import from inside the app |
+
+Scanning the QR from the screen of the same phone being configured is not
+possible with any app.
+
 ## Install
 
 Download the `.pkg` from [Releases](../../releases), copy it to the firewall and

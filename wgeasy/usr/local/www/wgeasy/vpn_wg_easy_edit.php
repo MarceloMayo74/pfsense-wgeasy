@@ -151,7 +151,14 @@ if ($_POST) {
 					break;
 				}
 
-				send_user_download('data', $client_conf, $conf_filename);
+				/*
+				 * Always delivered zipped. Every WireGuard client accepts an
+				 * archive, and a .zip survives being passed around by email or
+				 * a messenger, which a bare .conf often does not.
+				 */
+				send_user_download('data',
+					wgeasy_build_zip(array($conf_filename => $client_conf)),
+					wgeasy_zip_filename($conf_filename));
 				exit;
 
 			case 'genkeys':
@@ -530,6 +537,11 @@ print($form);
 			<span class="text-danger"><?=gettext('Note: ')?></span>
 			<?=gettext('This file contains the private key of the client. Hand it over through a channel you trust.')?>
 		</div>
+		<div class="alert alert-info" role="alert">
+			<?=gettext('On the phone being set up: open WireGuard, tap + and choose "Import from file or archive", then pick the downloaded .zip. ' .
+				'The Android app does not register itself as a handler for these files, so tapping the file in a messenger will never offer it. ' .
+				'Scanning the QR code needs a second screen.')?>
+		</div>
 		<div class="row">
 			<div class="col-sm-7">
 				<pre id="wgeasy_conf" style="max-height: 400px; overflow-y: auto;"><?=htmlspecialchars($client_conf)?></pre>
@@ -537,9 +549,9 @@ print($form);
 					<input type="hidden" name="act" value="download" />
 					<input type="hidden" name="confdata" value="<?=base64_encode($client_conf)?>" />
 					<input type="hidden" name="confname" value="<?=htmlspecialchars($conf_filename)?>" />
-					<button type="submit" class="btn btn-primary btn-sm" title="<?=gettext('Download the client configuration')?>">
+					<button type="submit" class="btn btn-primary btn-sm" title="<?=gettext('Download the client configuration, zipped so it survives being emailed or sent through a messenger')?>">
 						<i class="fa-solid fa-download icon-embed-btn"></i>
-						<?=gettext('Download')?>
+						<?=gettext('Download .zip')?>
 					</button>
 				</form>
 				<button type="button" id="wgeasy_copy" class="btn btn-default btn-sm" data-success-text="<?=gettext('Copied')?>" data-timeout="3000">
