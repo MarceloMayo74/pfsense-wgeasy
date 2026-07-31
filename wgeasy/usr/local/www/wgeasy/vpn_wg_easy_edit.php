@@ -531,7 +531,7 @@ print($form);
 			<?=gettext('This file contains the private key of the client. Hand it over through a channel you trust.')?>
 		</div>
 		<div class="row">
-			<div class="col-sm-8">
+			<div class="col-sm-7">
 				<pre id="wgeasy_conf" style="max-height: 400px; overflow-y: auto;"><?=htmlspecialchars($client_conf)?></pre>
 				<form action="<?=htmlspecialchars($wgeasyg['edit_page'])?>" method="post" style="display: inline;">
 					<input type="hidden" name="act" value="download" />
@@ -552,7 +552,7 @@ print($form);
 				</a>
 				<div id="wgeasy_qr_hidden" style="display: none;"></div>
 			</div>
-			<div class="col-sm-4 text-center">
+			<div class="col-sm-5 text-center">
 				<div id="wgeasy_qr"></div>
 <?php if (is_null(wgeasy_qrcode_js_url())): ?>
 				<div class="alert alert-warning" role="alert">
@@ -607,12 +607,17 @@ events.push(function() {
 	var wgeasyEditing = <?=$is_edit ? 'true' : 'false'?>;
 	var wgeasyQrSize = <?=(int) $wgeasyg['qr_size']?>;
 	var wgeasyQrDisplaySize = <?=(int) $wgeasyg['qr_display_size']?>;
+	var wgeasyQrLevel = <?=json_encode($wgeasyg['qr_level'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
+	var wgeasyQrQuietZone = <?=(int) $wgeasyg['qr_quiet_zone']?>;
 
 	/*
-	 * The QR library renders its <svg> with width="100%" height="100%" and no
-	 * xmlns, ignoring the size it was given. Inside a container with no height
-	 * of its own that collapses to nothing, and a serialized copy without the
-	 * namespace will not load as an image. Fix both on the element it made.
+	 * Repairs three things the QR library leaves wrong on the <svg> it builds:
+	 *
+	 *  - it uses width="100%" height="100%" and ignores the size it was given,
+	 *    so inside a container with no height the code collapses to nothing
+	 *  - it emits no quiet zone, while the standard requires four empty modules
+	 *    on every side for a scanner to find the code
+	 *  - it omits the xmlns, so a serialized copy will not load as an image
 	 */
 	function wgeasyFixQrSvg(holder, size) {
 		var svg = holder.querySelector('svg');
@@ -621,8 +626,36 @@ events.push(function() {
 			return null;
 		}
 
+		var box = (svg.getAttribute('viewBox') || '').split(/\s+/);
+
+		var modules = (box.length === 4) ? parseInt(box[2], 10) : 0;
+
+		if (modules > 0) {
+			var quiet = wgeasyQrQuietZone;
+			var side = modules + (quiet * 2);
+
+			svg.setAttribute('viewBox', (-quiet) + ' ' + (-quiet) + ' ' + side + ' ' + side);
+
+			// The background rect has to cover the new margin as well
+			for (var i = 0; i < svg.childNodes.length; i++) {
+				var node = svg.childNodes[i];
+
+				if (node.nodeName && (node.nodeName.toLowerCase() === 'rect')) {
+					node.setAttribute('x', -quiet);
+					node.setAttribute('y', -quiet);
+					node.setAttribute('width', side);
+					node.setAttribute('height', side);
+
+					break;
+				}
+			}
+		}
+
 		svg.setAttribute('width', size);
 		svg.setAttribute('height', size);
+
+		// Shrink on narrow screens instead of overflowing the column
+		svg.setAttribute('style', 'max-width: 100%; height: auto;');
 
 		if (!svg.getAttribute('xmlns')) {
 			svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -663,7 +696,7 @@ events.push(function() {
 			text: text,
 			width: wgeasyQrSize,
 			height: wgeasyQrSize,
-			correctLevel: QRCode.CorrectLevel.M
+			correctLevel: QRCode.CorrectLevel[wgeasyQrLevel]
 		});
 
 		var svg = wgeasyFixQrSvg(holder, wgeasyQrSize);
@@ -942,7 +975,7 @@ events.push(function() {
 				text: wgeasyConf,
 				width: wgeasyQrDisplaySize,
 				height: wgeasyQrDisplaySize,
-				correctLevel: QRCode.CorrectLevel.M
+				correctLevel: QRCode.CorrectLevel[wgeasyQrLevel]
 			});
 
 			// Without this the code is in the page but has no size to show at

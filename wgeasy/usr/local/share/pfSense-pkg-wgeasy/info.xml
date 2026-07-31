@@ -9,7 +9,7 @@
 				Requires pfSense-pkg-WireGuard. No native file is modified.]]></descr>
 		<pkginfolink>https://github.com/MarceloMayo74/pfsense-wgeasy</pkginfolink>
 		<website>https://github.com/MarceloMayo74/pfsense-wgeasy</website>
-		<version>0.3.3</version>
+		<version>0.3.4</version>
 		<configurationfile>wgeasy.xml</configurationfile>
 	</package>
 </pfsensepkgs>

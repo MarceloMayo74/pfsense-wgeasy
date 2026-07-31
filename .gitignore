@@ -19,3 +19,6 @@ dist/
 Thumbs.db
 desktop.ini
 *.swp
+
+# Node modules for the headless QR check
+node_modules/

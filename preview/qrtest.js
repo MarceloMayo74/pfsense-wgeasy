@@ -184,14 +184,36 @@ for (const size of [200, 400, 800, 1200, 1600, 2000]) {
 
 console.log('\n== the fix the pages apply ==');
 
+const QUIET = 4;
+
 // Same helper the pages run after creating a code
 function fixQrSvg(holder, size) {
 	const svg = holder.querySelector('svg');
 
 	if (!svg) { return null; }
 
+	const box = (svg.getAttribute('viewBox') || '').split(/\s+/);
+	const modules = (box.length === 4) ? parseInt(box[2], 10) : 0;
+
+	if (modules > 0) {
+		const side = modules + (QUIET * 2);
+
+		svg.setAttribute('viewBox', `${-QUIET} ${-QUIET} ${side} ${side}`);
+
+		for (const node of svg.childNodes) {
+			if (node.tagName && (node.tagName.toLowerCase() === 'rect')) {
+				node.setAttribute('x', -QUIET);
+				node.setAttribute('y', -QUIET);
+				node.setAttribute('width', side);
+				node.setAttribute('height', side);
+				break;
+			}
+		}
+	}
+
 	svg.setAttribute('width', size);
 	svg.setAttribute('height', size);
+	svg.setAttribute('style', 'max-width: 100%; height: auto;');
 
 	if (!svg.getAttribute('xmlns')) {
 		svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
@@ -218,6 +240,74 @@ if (fixed) {
 		out.includes('xmlns="http://www.w3.org/2000/svg"'));
 
 	check('the modules survived the fix', (out.match(/<use/g) || []).length > 100);
+
+	check('it carries the quiet zone the standard requires',
+		out.includes(`viewBox="${-QUIET} ${-QUIET} `), (out.match(/viewBox="[^"]*"/) || [])[0]);
+}
+
+/*
+ * The real proof: rasterize what the pages produce and read it back with an
+ * independent decoder. If this passes, a scanner is looking at the right bytes.
+ */
+console.log('\n== an independent decoder reads it back ==');
+
+let jsQR = null;
+
+try {
+	jsQR = require('jsqr');
+} catch (e) {
+	console.log('  SKIP  jsqr is not installed, run: npm install --prefix preview');
+}
+
+function rasterize(holder, quiet, scale) {
+	const svg = holder.querySelector('svg');
+	const box = svg.getAttribute('viewBox').split(/\s+/).map(Number);
+
+	// Module coordinates are independent of the viewBox origin
+	const modules = box[2] - (quiet * 2);
+	const side = (modules + quiet * 2) * scale;
+	const data = new Uint8ClampedArray(side * side * 4).fill(255);
+
+	for (const node of svg.childNodes) {
+		if (node.tagName !== 'use') { continue; }
+
+		const mx = Number(node.attributes.x);
+		const my = Number(node.attributes.y);
+
+		for (let dy = 0; dy < scale; dy++) {
+			for (let dx = 0; dx < scale; dx++) {
+				const i = (((my + quiet) * scale + dy) * side + ((mx + quiet) * scale + dx)) * 4;
+				data[i] = data[i + 1] = data[i + 2] = 0;
+			}
+		}
+	}
+
+	return { data, side, modules };
+}
+
+if (jsQR) {
+	for (const level of ['L', 'M']) {
+		const h = makeElement('div');
+
+		new QRCode(h, { text: text, correctLevel: QRCode.CorrectLevel[level] });
+
+		fixQrSvg(h, 400);
+
+		const { data, side, modules } = rasterize(h, QUIET, 4);
+		const res = jsQR(data, side, side);
+
+		check(`level ${level} decodes back to the exact configuration`,
+			res !== null && res.data === text,
+			res ? 'decoded but differs' : 'did not decode');
+
+		if (level === 'L') {
+			// What a phone camera has to resolve on screen
+			const perModule = 400 / (modules + QUIET * 2);
+
+			check('at the on screen size each module gets enough pixels',
+				perModule >= 4, `${perModule.toFixed(2)} px per module over ${modules} modules`);
+		}
+	}
 }
 
 console.log(`\n${pass} passed, ${fail} failed\n`);

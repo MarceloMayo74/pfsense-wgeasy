@@ -70,9 +70,19 @@ $wgeasyg = array(
 	'qrcode_js'		=> array(
 					'/wgeasy/js/wgeasy_qrcode.js',
 					'/wg_qrcode.js'),
-	// On screen, and the pixel size of the downloaded PNG
-	'qr_display_size'	=> 256,
+	/*
+	 * On screen, and the pixel size of the downloaded PNG.
+	 *
+	 * A client file is around 450 bytes, which at error correction level L
+	 * needs 73 modules plus the 4 module quiet zone. Phone cameras want
+	 * roughly 4 to 5 pixels per module to lock on, hence 400 rather than
+	 * something smaller. Level L is also what qrencode(1) defaults to, the
+	 * tool the WireGuard app itself suggests for making these codes.
+	 */
+	'qr_display_size'	=> 400,
 	'qr_size'		=> 512,
+	'qr_level'		=> 'L',
+	'qr_quiet_zone'		=> 4,
 	'default_keepalive'	=> 25,
 	'default_allowedips'	=> '0.0.0.0/0, ::/0',
 	// Upper bound when probing a tunnel subnet for a free address

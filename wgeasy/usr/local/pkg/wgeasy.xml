@@ -27,8 +27,8 @@
 	</copyright>
 	<name>wgeasy</name>
 	<title>VPN/WireGuard Easy</title>
-	<version>0.3.3</version>
-	<pkgversion>0.3.3</pkgversion>
+	<version>0.3.4</version>
+	<pkgversion>0.3.4</pkgversion>
 	<category>VPN</category>
 	<pkginfolink>https://github.com/MarceloMayo74/pfsense-wgeasy</pkginfolink>
 	<include_file>/usr/local/pkg/wgeasy.inc</include_file>

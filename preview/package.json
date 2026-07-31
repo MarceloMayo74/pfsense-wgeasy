@@ -1,0 +1,16 @@
+{
+  "name": "@preview/preview",
+  "version": "1.0.0",
+  "description": "Levanta la página `vpn_wg_provision.php` en el navegador, en Windows, sin pfSense.",
+  "main": "qrtest.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "jsqr": "^1.4.0"
+  }
+}
