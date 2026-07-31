@@ -280,6 +280,34 @@ events.push(function() {
 	var wgeasyPage = <?=json_encode($wgeasyg['page'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
 	var wgeasyQrSize = <?=(int) $wgeasyg['qr_size']?>;
 
+	/*
+	 * The QR library renders its <svg> with width="100%" height="100%" and no
+	 * xmlns, ignoring the size it was given, so a serialized copy will not load
+	 * as an image. Fix both on the element it made.
+	 */
+	function wgeasyFixQrSvg(holder, size) {
+		var svg = holder.querySelector('svg');
+
+		if (!svg) {
+			return null;
+		}
+
+		svg.setAttribute('width', size);
+		svg.setAttribute('height', size);
+
+		if (!svg.getAttribute('xmlns')) {
+			svg.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+		}
+
+		return svg;
+	}
+
+	function wgeasySvgDataUrl(svg) {
+		var text = new XMLSerializer().serializeToString(svg);
+
+		return 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(text)));
+	}
+
 	// Hands a data URL to the browser as a download
 	function wgeasySave(dataUrl, filename) {
 		var link = document.createElement('a');
@@ -302,14 +330,20 @@ events.push(function() {
 
 		holder.innerHTML = '';
 
-		var qr = new QRCode(holder, {
+		new QRCode(holder, {
 			text: text,
 			width: wgeasyQrSize,
 			height: wgeasyQrSize,
 			correctLevel: QRCode.CorrectLevel.M
 		});
 
-		var svgUrl = qr.toDataURL();
+		var svg = wgeasyFixQrSvg(holder, wgeasyQrSize);
+
+		if (!svg) {
+			return;
+		}
+
+		var svgUrl = wgeasySvgDataUrl(svg);
 
 		var img = new Image();
 

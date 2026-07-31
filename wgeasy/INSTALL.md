@@ -29,12 +29,12 @@ FreeBSD para instalar y desinstalar limpio con `pkg`:
 powershell -ExecutionPolicy Bypass -File build\make-pkg.ps1
 ```
 
-Eso genera `dist\pfSense-pkg-wgeasy-0.3.2.pkg` (verificado contra el formato
+Eso genera `dist\pfSense-pkg-wgeasy-0.3.3.pkg` (verificado contra el formato
 del paquete de terceros que ya funciona en este firewall). Luego:
 
 ```sh
-scp dist/pfSense-pkg-wgeasy-0.3.2.pkg root@192.168.1.1:/root/
-ssh root@192.168.1.1 pkg add /root/pfSense-pkg-wgeasy-0.3.2.pkg
+scp dist/pfSense-pkg-wgeasy-0.3.3.pkg root@192.168.1.1:/root/
+ssh root@192.168.1.1 pkg add /root/pfSense-pkg-wgeasy-0.3.3.pkg
 ```
 
 Y entrá a `https://<firewall>/wgeasy/vpn_wg_easy.php` (o VPN > WireGuard
