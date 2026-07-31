@@ -13,6 +13,23 @@ key pair yourself, paste the public key into a peer, and then write the client
 
 Tested on pfSense CE 2.8.1 with pfSense-pkg-WireGuard 0.2.9_6.
 
+## Screenshots
+
+One form creates the peer and produces the client file, with the QR code ready
+to scan and a button to download it or send it by email:
+
+![Adding a peer](docs/img/add-peer.png)
+
+The peer list, with per row actions to hand the file out again:
+
+![Easy Peers](docs/img/easy-peers.png)
+
+The dashboard widget, next to the native WireGuard one. The native widget
+counts active peers; this one names them and shows where they are connected
+from:
+
+![Dashboard widget](docs/img/widget.png)
+
 ## What it does
 
 **Easy Peers** lists your peers with the same columns as the native Peers page,
