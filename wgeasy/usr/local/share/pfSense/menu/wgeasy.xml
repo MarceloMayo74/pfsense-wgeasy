@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<packagegui>
+	<menu>
+		<name>WireGuard Easy</name>
+		<tooltiptext>Create WireGuard clients: key pair, .conf file, QR code and email delivery</tooltiptext>
+		<section>VPN</section>
+		<url>/wgeasy/vpn_wg_easy.php</url>
+		<icon>fa-solid fa-qrcode</icon>
+	</menu>
+</packagegui>

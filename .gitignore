@@ -1,0 +1,21 @@
+# Third party packages kept locally as a reference while developing.
+# They belong to their own authors and are not redistributed here.
+wireguard-nativo/
+wg-export-terceros/
+*.pkg
+
+# Portable PHP used to run the preview and the test suite locally
+.tools/
+
+# Preview runtime state: fake config.xml, generated .conf files, mail outbox
+preview/var/
+
+# Build output. Releases are published as GitHub Release assets instead.
+dist/
+
+# Editors and OS noise
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.swp
