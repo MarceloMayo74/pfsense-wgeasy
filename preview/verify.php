@@ -821,6 +821,36 @@ check('the tunnel network is derived from the interface subnet',
 check('the form pre-fills for the assigned tunnel too',
 	wgeasy_default_pconfig('tun_wg2')['address'] === '10.9.0.2/32');
 
+/*
+ * Assigning a tunnel does not erase the Interface Addresses it carried before,
+ * and the native page stops showing them, so they can sit in the configuration
+ * naming a network the tunnel no longer has. The assigned interface wins.
+ */
+config_set_path('installedpackages/wireguard/tunnels/item/2/addresses/row',
+	array(array('address' => '10.99.99.1', 'mask' => '24', 'descr' => 'De antes de asignarla')));
+
+write_config('Preview: leftover address rows on an assigned tunnel.');
+
+check('address rows left over from before the assignment are ignored',
+	wgeasy_tunnel_address_rows('tun_wg2') === array(array('address' => '10.9.0.1', 'mask' => '24')),
+	json_encode(wgeasy_tunnel_address_rows('tun_wg2')));
+
+check('the suggested address comes from the assigned interface, not the leftovers',
+	wgeasy_next_free_address('tun_wg2') === '10.9.0.2/32',
+	var_export(wgeasy_next_free_address('tun_wg2'), true));
+
+check('the tunneled networks leave the stale network out',
+	!in_array('10.99.99.0/24', wgeasy_get_tunneled_networks('tun_wg2'))
+	&& in_array('10.9.0.0/24', wgeasy_get_tunneled_networks('tun_wg2')),
+	implode(', ', wgeasy_get_tunneled_networks('tun_wg2')));
+
+check('the DNS default is not taken from the leftovers either',
+	wgeasy_tunnel_dns('tun_wg2') === '10.9.0.1');
+
+config_set_path('installedpackages/wireguard/tunnels/item/2/addresses/row', array());
+
+write_config('Preview: drop the leftover rows again.');
+
 $html11 = render(array_merge($base_post, array(
 		'descr'		=> 'peer-asignado',
 		'tun'		=> 'tun_wg2',
@@ -833,6 +863,86 @@ check('a client provisions cleanly on the assigned tunnel',
 
 check('its file carries the assigned tunnel endpoint port',
 	conf_value(conf_from_html($html11), 'Endpoint', 'Peer') === 'vpn.casa.example.com:51822');
+
+fwrite(STDOUT, "\n== 16b. the tunnel address is changed afterwards ==\n");
+
+$saved_rows = config_get_path('installedpackages/wireguard/tunnels/item/0/addresses/row');
+
+// tun_wg0 moves from 10.6.0.1/24 to 10.10.10.1/24, peers already on 10.6.0.x
+config_set_path('installedpackages/wireguard/tunnels/item/0/addresses/row',
+	array(array('address' => '10.10.10.1', 'mask' => '24', 'descr' => 'Red nueva')));
+
+write_config('Preview: change the tunnel address.');
+
+check('the suggestion moves to the new tunnel network',
+	wgeasy_next_free_address('tun_wg0') === '10.10.10.2/32',
+	var_export(wgeasy_next_free_address('tun_wg0'), true));
+
+check('it starts at .2, since the tunnel itself holds .1',
+	wgeasy_next_free_address('tun_wg0') !== '10.10.10.1/32');
+
+check('the tunneled networks follow the change',
+	in_array('10.10.10.0/24', wgeasy_get_tunneled_networks('tun_wg0'))
+	&& !in_array('10.6.0.0/24', wgeasy_get_tunneled_networks('tun_wg0')),
+	implode(', ', wgeasy_get_tunneled_networks('tun_wg0')));
+
+check('the DNS default follows the change too',
+	wgeasy_tunnel_dns('tun_wg0') === '10.10.10.1');
+
+$moved = wgeasy_default_pconfig('tun_wg0');
+
+check('the add form opens on the new network', $moved['address'] === '10.10.10.2/32',
+	var_export($moved['address'], true));
+
+check('and pre-fills Tunneled Networks with it',
+	strpos($moved['client_allowedips'], '10.10.10.0/24') !== false
+	&& strpos($moved['client_allowedips'], '10.6.0.0/24') === false,
+	$moved['client_allowedips']);
+
+// A tunnel address that is not the first host: the free hosts below it count
+config_set_path('installedpackages/wireguard/tunnels/item/0/addresses/row',
+	array(array('address' => '10.10.10.5', 'mask' => '24', 'descr' => 'Red nueva')));
+
+write_config('Preview: tunnel address away from the first host.');
+
+check('a tunnel not sitting on .1 gets .1 offered',
+	wgeasy_next_free_address('tun_wg0') === '10.10.10.1/32',
+	var_export(wgeasy_next_free_address('tun_wg0'), true));
+
+// And the same as seen by the browser, which reads the hints handed to the page
+$hints = wgeasy_tunnel_hints();
+
+check('the per tunnel hints handed to the form carry the current network',
+	($hints['tun_wg0']['address'] === '10.10.10.1/32')
+	&& (strpos($hints['tun_wg0']['networks'], '10.10.10.0/24') !== false),
+	json_encode($hints['tun_wg0']));
+
+config_set_path('installedpackages/wireguard/tunnels/item/0/addresses/row', $saved_rows);
+
+write_config('Preview: restore the tunnel address.');
+
+check('restoring the tunnel address restores the suggestion',
+	strpos((string) wgeasy_next_free_address('tun_wg0'), '10.6.0.') === 0,
+	var_export(wgeasy_next_free_address('tun_wg0'), true));
+
+// Nothing the browser remembers may put a stale address back on screen
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+$_POST = array();
+
+ob_start();
+
+include($page);
+
+$fresh_html = ob_get_clean();
+
+$_SERVER['REQUEST_METHOD'] = 'POST';
+
+check('the address field is not left to browser autocomplete',
+	preg_match('/name="address"[^>]*autocomplete="off"/', $fresh_html) === 1);
+
+check('nor is the tunneled networks field',
+	preg_match('/name="client_allowedips"[^>]*autocomplete="off"/', $fresh_html) === 1);
 
 fwrite(STDOUT, "\n== 17. re-export and edit an existing peer ==\n");
 

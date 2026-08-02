@@ -113,12 +113,18 @@ function wgeasy_get_tun_list() {
 }
 
 /*
- * Returns the address rows that actually apply to a tunnel.
+ * Returns the address rows that actually apply to a tunnel, as configured right
+ * now.
  *
  * A tunnel normally carries its own Interface Addresses, but once it is
- * assigned as a pfSense interface the native package hides those fields and
- * the address lives on the assigned interface instead (see the address section
- * of vpn_wg_tunnels_edit.php). Read whichever place holds them.
+ * assigned as a pfSense interface the native package hides those fields and the
+ * address lives on the assigned interface instead (see the address section of
+ * vpn_wg_tunnels_edit.php, which calls them "only applicable for unassigned
+ * WireGuard tunnel interfaces"). Read whichever place holds them.
+ *
+ * The assigned interface is asked first, not as a fallback: rows saved before
+ * the tunnel was assigned stay in the configuration untouched, and reading them
+ * would keep handing out addresses of a network the tunnel no longer carries.
  */
 function wgeasy_tunnel_address_rows($tunnel_name) {
 	$a_ret = array();
@@ -127,15 +133,11 @@ function wgeasy_tunnel_address_rows($tunnel_name) {
 		return $a_ret;
 	}
 
-	foreach ((array) $tunnel['addresses']['row'] as $address) {
-		if (is_ipaddr($address['address'] ?? '')) {
-			$a_ret[] = array('address' => $address['address'], 'mask' => (string) $address['mask']);
+	if (is_wg_tunnel_assigned($tunnel['name'])) {
+		if (!($pfsense_if = wg_get_pfsense_interface_info($tunnel['name']))) {
+			return $a_ret;
 		}
-	}
 
-	if (empty($a_ret)
-	    && is_wg_tunnel_assigned($tunnel['name'])
-	    && ($pfsense_if = wg_get_pfsense_interface_info($tunnel['name']))) {
 		$if = $pfsense_if['name'];
 
 		$address = get_interface_ip($if);
@@ -152,6 +154,19 @@ function wgeasy_tunnel_address_rows($tunnel_name) {
 
 		if (is_ipaddrv6($address6) && is_numericint($bits6)) {
 			$a_ret[] = array('address' => $address6, 'mask' => (string) $bits6);
+		}
+
+		/*
+		 * An assigned tunnel whose interface is down has no address to work
+		 * from. Returning nothing is the honest answer; the leftover rows
+		 * would only look right.
+		 */
+		return $a_ret;
+	}
+
+	foreach ((array) $tunnel['addresses']['row'] as $address) {
+		if (is_ipaddr($address['address'] ?? '')) {
+			$a_ret[] = array('address' => $address['address'], 'mask' => (string) $address['mask']);
 		}
 	}
 

@@ -407,12 +407,18 @@ $section->addInput(new Form_StaticText(
 
 $group = new Form_Group('*Allowed IPs');
 
+/*
+ * autocomplete off on both this field and Tunneled Networks below: they are
+ * computed from the tunnel on every render, and a browser restoring what it
+ * remembered from an earlier visit would put the address of a tunnel network
+ * that has since been changed back on screen.
+ */
 $group->add(new Form_Input(
 	'address',
 	'Allowed IPs',
 	'text',
 	$pconfig['address'],
-	['placeholder' => '10.6.0.2/32']
+	['placeholder' => '10.6.0.2/32', 'autocomplete' => 'off']
 ))->addClass('trim')
   ->setHelp('Address assigned to this client, in CIDR notation. Separate multiple addresses with commas.<br />
 	     Written as <code>Address</code> in the client file and as the peer <code>AllowedIPs</code> here.')
@@ -447,7 +453,7 @@ $section->addInput(new Form_Input(
 	'*Tunneled Networks',
 	'text',
 	$pconfig['client_allowedips'],
-	['placeholder' => '0.0.0.0/0, ::/0']
+	['placeholder' => '0.0.0.0/0, ::/0', 'autocomplete' => 'off']
 ))->addClass('trim')
   ->setHelp('Networks the client routes into the tunnel. Written as <code>AllowedIPs</code> in the client file.');
 
