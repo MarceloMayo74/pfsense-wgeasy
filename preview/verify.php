@@ -90,6 +90,19 @@ function conf_value($conf, $attr, $section = null) {
 	return null;
 }
 
+// The last peer carrying a given description, or null
+function peer_idx_by_descr($descr) {
+	$found = null;
+
+	foreach (config_get_path('installedpackages/wireguard/peers/item', []) as $idx => $peer) {
+		if (($peer['descr'] ?? '') === $descr) {
+			$found = $idx;
+		}
+	}
+
+	return $found;
+}
+
 function derive_pubkey($privkey_b64) {
 	$raw = base64_decode($privkey_b64, true);
 
@@ -572,11 +585,15 @@ check('Google Public DNS is offered', array_key_exists('8.8.8.8, 8.8.4.4', $dns_
 check('the tunnel address preset is no longer offered',
 	!array_key_exists(WGEASY_DNS_TUNNEL, $dns_presets));
 
-// Split routing is the default, so the client keeps its own DNS until chosen
+/*
+ * Split routing is the default, so the client keeps its own DNS until chosen.
+ * Asked of tun_wg2, the one tunnel with no client created here yet: a tunnel
+ * that already has one offers what that one got, see 23.
+ */
 check('with the split default the DNS field starts empty',
-	is_null(wgeasy_default_pconfig('tun_wg0')['dns'])
-	&& (wgeasy_default_pconfig('tun_wg0')['dns_preset'] === ''),
-	var_export(wgeasy_default_pconfig('tun_wg0')['dns'], true));
+	is_null(wgeasy_default_pconfig('tun_wg2')['dns'])
+	&& (wgeasy_default_pconfig('tun_wg2')['dns_preset'] === ''),
+	var_export(wgeasy_default_pconfig('tun_wg2')['dns'], true));
 
 check('the DNS servers of the firewall itself are offered',
 	array_key_exists('192.168.1.5, 1.1.1.1', $dns_presets));
@@ -788,13 +805,18 @@ $tunneled = wgeasy_get_tunneled_networks('tun_wg0');
 
 check('the tunnel network itself is included', in_array('10.6.0.0/24', $tunneled));
 
-$defaults = wgeasy_default_pconfig('tun_wg0');
+/*
+ * tun_wg2 has had no client created here yet, so nothing is remembered on it
+ * and the form shows what the tunnel itself answers. Clients on tun_wg0 were
+ * made full tunnel further up, which is what that tunnel now offers, see 21.
+ */
+$defaults = wgeasy_default_pconfig('tun_wg2');
 
 check('the form defaults to split routing', $defaults['routing'] === 'split');
 
 check('the Tunneled Networks field is pre-filled with them',
 	strpos($defaults['client_allowedips'], '192.168.1.0/24') !== false
-	&& strpos($defaults['client_allowedips'], '10.6.0.0/24') !== false,
+	&& strpos($defaults['client_allowedips'], '10.9.0.0/24') !== false,
 	$defaults['client_allowedips']);
 
 // The genpsk ajax action calls exit(), so it is exercised over HTTP instead
@@ -889,6 +911,27 @@ check('the tunneled networks follow the change',
 check('the DNS default follows the change too',
 	wgeasy_tunnel_dns('tun_wg0') === '10.10.10.1');
 
+/*
+ * The last client on the tunnel is what a new one starts from (see 21), so put
+ * it on a split tunnel carrying the network as it was before the change: a
+ * remembered split tunnel has to be recomputed, never replayed.
+ */
+$stale_idx = null;
+
+foreach (config_get_path('installedpackages/wireguard/peers/item', []) as $idx => $peer) {
+	if (($peer['tun'] == 'tun_wg0') && !empty(wgeasy_peer_store($peer))) {
+		$stale_idx = $idx;
+	}
+}
+
+check('a client of this tunnel was created here', !is_null($stale_idx));
+
+$saved_store = wgeasy_peer_store(config_get_path("installedpackages/wireguard/peers/item/{$stale_idx}"));
+
+wgeasy_save_peer_store($stale_idx, array_merge($saved_store, array(
+			'routing'	=> 'split',
+			'allowedips'	=> '10.6.0.0/24, 192.168.1.0/24')));
+
 $moved = wgeasy_default_pconfig('tun_wg0');
 
 check('the add form opens on the new network', $moved['address'] === '10.10.10.2/32',
@@ -898,6 +941,9 @@ check('and pre-fills Tunneled Networks with it',
 	strpos($moved['client_allowedips'], '10.10.10.0/24') !== false
 	&& strpos($moved['client_allowedips'], '10.6.0.0/24') === false,
 	$moved['client_allowedips']);
+
+// Leave the peer as it was for the sections below
+wgeasy_save_peer_store($stale_idx, $saved_store);
 
 // A tunnel address that is not the first host: the free hosts below it count
 config_set_path('installedpackages/wireguard/tunnels/item/0/addresses/row',
@@ -1245,6 +1291,321 @@ check('an offline peer is reported as never seen',
 config_del_path("installedpackages/wireguard/peers/item/{$offline_idx}");
 
 write_config('Preview: drop the offline peer.');
+
+fwrite(STDOUT, "\n== 21. the endpoint port is not optional ==\n");
+
+config_read_file();
+
+$html_noport = render(array_merge($base_post, array(
+			'descr'		=> 'sin-puerto',
+			'address'	=> '10.6.0.60/32',
+			'port'		=> '')));
+
+check('a client without an endpoint port is refused',
+	strpos($html_noport, 'input-errors') !== false);
+
+check('and the message says which field is missing',
+	stripos(strip_tags($html_noport), 'endpoint port must be specified') !== false);
+
+check('nothing was saved for it',
+	is_null(peer_idx_by_descr('sin-puerto')));
+
+check('a port that is not a port is still refused',
+	strpos(render(array_merge($base_post, array(
+			'descr'		=> 'puerto-raro',
+			'address'	=> '10.6.0.61/32',
+			'port'		=> '99999'))), 'input-errors') !== false);
+
+/*
+ * Peers stored before this was enforced, and peers created by hand with a
+ * dynamic endpoint, carry no port. Their file still has to name one.
+ */
+$port_idx = null;
+
+foreach (config_get_path('installedpackages/wireguard/peers/item', []) as $idx => $peer) {
+	if (($peer['tun'] == 'tun_wg0') && wgeasy_peer_is_exportable($peer)) {
+		$port_idx = $idx;
+	}
+}
+
+check('a client of tun_wg0 can still be exported', !is_null($port_idx));
+
+$port_store = wgeasy_peer_store(config_get_path("installedpackages/wireguard/peers/item/{$port_idx}"));
+
+$portless_store = $port_store;
+
+unset($portless_store['port']);
+
+wgeasy_save_peer_store($port_idx, $portless_store);
+
+[$portless_conf, $portless_name] = wgeasy_conf_from_peer($port_idx);
+
+check('a peer stored without a port falls back to the tunnel listen port',
+	conf_value($portless_conf, 'Endpoint', 'Peer') === 'vpn.casa.example.com:51820',
+	var_export(conf_value($portless_conf, 'Endpoint', 'Peer'), true));
+
+wgeasy_save_peer_store($port_idx, $port_store);
+
+fwrite(STDOUT, "\n== 22. the MTU comes from the tunnel ==\n");
+
+check('a tunnel on the default MTU adds no line to the client file',
+	is_null(wgeasy_tunnel_mtu('tun_wg0')));
+
+check('a lowered tunnel MTU is handed to the client',
+	(string) wgeasy_tunnel_mtu('tun_wg1') === '1412',
+	var_export(wgeasy_tunnel_mtu('tun_wg1'), true));
+
+// tun_wg2 carries a client saved with no MTU of its own, so the tunnel answers
+config_set_path('installedpackages/wireguard/tunnels/item/2/mtu', '1400');
+
+write_config('Preview: lower the MTU of the assigned tunnel.');
+
+check('the add form picks it up', (string) wgeasy_default_pconfig('tun_wg2')['mtu'] === '1400',
+	var_export(wgeasy_default_pconfig('tun_wg2')['mtu'], true));
+
+config_set_path('installedpackages/wireguard/tunnels/item/2/mtu', '1420');
+
+write_config('Preview: restore the MTU of the assigned tunnel.');
+
+check('and leaves the field empty again once the tunnel is back on the default',
+	empty(wgeasy_default_pconfig('tun_wg2')['mtu']));
+
+$html_mtu = render(array_merge($base_post, array(
+			'descr'		=> 'sucursal-mtu',
+			'tun'		=> 'tun_wg1',
+			'address'	=> '10.7.0.60/32',
+			'port'		=> '51821',
+			'dns'		=> '',
+			'mtu'		=> '1412',
+			'routing'	=> 'split',
+			'client_allowedips' => '10.7.0.0/24')));
+
+check('a client created with it carries the MTU in its file',
+	conf_value(conf_from_html($html_mtu), 'MTU', 'Interface') === '1412');
+
+fwrite(STDOUT, "\n== 23. a new client starts from the last one on the tunnel ==\n");
+
+$remember_key = wg_gen_keypair(false)['privkey'];
+
+$html_remember = render(array_merge($base_post, array(
+			'descr'			=> 'oficina-remota',
+			'tun'			=> 'tun_wg1',
+			'privatekey'		=> $remember_key,
+			'address'		=> '10.7.0.61/32',
+			'endpoint'		=> 'sucursal.example.com',
+			'port'			=> '51821',
+			'dns'			=> '10.7.0.1, 1.1.1.1',
+			'mtu'			=> '1380',
+			'routing'		=> 'custom',
+			'client_allowedips'	=> '10.7.0.0/24, 172.16.9.0/24',
+			'persistentkeepalive'	=> '15')));
+
+check('the client is created', strpos($html_remember, 'input-errors') === false);
+
+$next = wgeasy_default_pconfig('tun_wg1');
+
+check('the endpoint is offered again', $next['endpoint'] === 'sucursal.example.com',
+	var_export($next['endpoint'], true));
+
+check('so is its port', (string) $next['port'] === '51821', var_export($next['port'], true));
+
+check('the DNS servers are offered again', $next['dns'] === '10.7.0.1, 1.1.1.1',
+	var_export($next['dns'], true));
+
+check('the MTU too', (string) $next['mtu'] === '1380', var_export($next['mtu'], true));
+
+check('and the keep alive', (string) $next['persistentkeepalive'] === '15',
+	var_export($next['persistentkeepalive'], true));
+
+check('a hand written network list comes back as it was typed',
+	($next['routing'] === 'custom') && ($next['client_allowedips'] === '10.7.0.0/24, 172.16.9.0/24'),
+	"{$next['routing']}: {$next['client_allowedips']}");
+
+check('the address is not remembered, the next free one is offered',
+	$next['address'] !== '10.7.0.61/32', var_export($next['address'], true));
+
+check('nor is the key pair, which must be new every time',
+	$next['privatekey'] !== $remember_key);
+
+check('nor the description', empty($next['descr']));
+
+/*
+ * Remembering is for new clients only. An existing peer has to open on what it
+ * was saved with, or editing it would silently re-issue the last client's MTU,
+ * DNS and keep alive to somebody else's phone.
+ */
+$earlier_idx = peer_idx_by_descr('sucursal-mtu');
+
+check('an earlier client of the same tunnel is still there', !is_null($earlier_idx));
+
+$earlier = wgeasy_pconfig_from_peer($earlier_idx);
+
+check('opening it shows its own MTU, not the one of the last client',
+	(string) $earlier['mtu'] === '1412', var_export($earlier['mtu'], true));
+
+check('its own keep alive too', (string) $earlier['persistentkeepalive'] === '25',
+	var_export($earlier['persistentkeepalive'], true));
+
+check('and the DNS field it was saved with, blank included',
+	$earlier['dns'] === '', var_export($earlier['dns'], true));
+
+check('its networks are the ones handed to that client',
+	$earlier['client_allowedips'] === '10.7.0.0/24', $earlier['client_allowedips']);
+
+// Each tunnel remembers on its own
+check('another tunnel keeps its own endpoint',
+	wgeasy_default_pconfig('tun_wg2')['endpoint'] === 'vpn.casa.example.com',
+	var_export(wgeasy_default_pconfig('tun_wg2')['endpoint'], true));
+
+check('and its own port',
+	(string) wgeasy_default_pconfig('tun_wg2')['port'] === '51822');
+
+$hints = wgeasy_tunnel_hints();
+
+check('the browser is handed the same defaults for a tunnel switch',
+	($hints['tun_wg1']['defaults']['endpoint'] === 'sucursal.example.com')
+	&& ((string) $hints['tun_wg1']['defaults']['port'] === '51821'),
+	json_encode($hints['tun_wg1']['defaults']));
+
+check('and they are the very ones the form would render',
+	$hints['tun_wg2']['defaults']['client_allowedips'] === wgeasy_default_pconfig('tun_wg2')['client_allowedips'],
+	$hints['tun_wg2']['defaults']['client_allowedips']);
+
+// tun_wg2 got a full tunnel client in 16, so that is what it offers now
+check('a tunnel whose last client was full tunnel offers full tunnel again',
+	(wgeasy_default_pconfig('tun_wg2')['routing'] === 'full')
+	&& (wgeasy_default_pconfig('tun_wg2')['client_allowedips'] === '0.0.0.0/0, ::/0'),
+	wgeasy_default_pconfig('tun_wg2')['client_allowedips']);
+
+// And the form really opens on them
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+$_POST = array();
+
+$_REQUEST = array('tun' => 'tun_wg1');
+
+ob_start();
+
+include($page);
+
+$remember_html = ob_get_clean();
+
+$_SERVER['REQUEST_METHOD'] = 'POST';
+
+$_REQUEST = array();
+
+check('the add form opens with the remembered endpoint',
+	strpos($remember_html, 'value="sucursal.example.com"') !== false);
+
+check('and with the remembered keep alive',
+	preg_match('/name="persistentkeepalive"[^>]*value="15"/', $remember_html) === 1);
+
+/*
+ * A peer created under Peers > Edit carries no client settings, so a tunnel
+ * holding only those falls back to what the firewall itself knows
+ */
+$plain = array(
+	'enabled'	=> 'yes',
+	'tun'		=> 'tun_wg1',
+	'descr'		=> 'peer-a-mano',
+	'publickey'	=> wg_gen_keypair(false)['pubkey'],
+	'presharedkey'	=> '');
+
+$plain['allowedips']['row'] = array(array('address' => '10.7.0.90', 'mask' => '32', 'descr' => ''));
+
+$plain_idx = max(array_keys(config_get_path('installedpackages/wireguard/peers/item', []))) + 1;
+
+config_set_path("installedpackages/wireguard/peers/item/{$plain_idx}", $plain);
+
+write_config('Preview: add a peer created by hand.');
+
+check('a peer created by hand does not become the memory of the tunnel',
+	wgeasy_default_pconfig('tun_wg1')['endpoint'] === 'sucursal.example.com');
+
+config_del_path("installedpackages/wireguard/peers/item/{$plain_idx}");
+
+write_config('Preview: drop the peer created by hand.');
+
+fwrite(STDOUT, "\n== 24. firewall aliases as tunneled networks ==\n");
+
+$aliases = wgeasy_get_alias_presets();
+
+check('a network alias is offered', isset($aliases['redes_internas']));
+
+check('with its contents, not its name',
+	($aliases['redes_internas']['networks'] ?? null) === '192.168.1.0/24, 192.168.20.0/24',
+	json_encode($aliases['redes_internas'] ?? null));
+
+check('a host alias becomes a single host route',
+	($aliases['nas']['networks'] ?? null) === '192.168.1.10/32');
+
+check('the label says how many networks it holds',
+	strpos($aliases['redes_internas']['label'] ?? '', '2 networks') !== false,
+	$aliases['redes_internas']['label'] ?? '');
+
+check('a single network is spelled out instead',
+	strpos($aliases['nas']['label'] ?? '', '192.168.1.10/32') !== false,
+	$aliases['nas']['label'] ?? '');
+
+check('a port alias is not something a client can route to',
+	!isset($aliases['puertos_web']));
+
+check('an alias holding only hostnames is left out',
+	!isset($aliases['dominios']));
+
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+$_POST = $_REQUEST = array();
+
+ob_start();
+
+include($page);
+
+$alias_html = ob_get_clean();
+
+$_SERVER['REQUEST_METHOD'] = 'POST';
+
+check('the form offers them next to the tunneled networks',
+	preg_match('/name="client_allowedips".*?name="allowedips_alias"/s', $alias_html) === 1);
+
+check('and hands the browser what each one resolves to',
+	strpos($alias_html, '192.168.1.0\/24, 192.168.20.0\/24') !== false
+	|| strpos($alias_html, '192.168.1.0/24, 192.168.20.0/24') !== false);
+
+check('the alias select is not posted, so it cannot reach a peer',
+	strpos($alias_html, 'name="allowedips_alias"') !== false
+	&& (strpos(json_encode(wgeasy_do_provision_post(array(
+			'act'	=> 'provision',
+			'tun'	=> 'tun_wg0'))['pconfig']), 'allowedips_alias') === false));
+
+// With no aliases configured the extra select is simply not there
+$saved_aliases = config_get_path('aliases/alias', []);
+
+config_set_path('aliases', array());
+
+write_config('Preview: no aliases configured.');
+
+$_SERVER['REQUEST_METHOD'] = 'GET';
+
+$_POST = $_REQUEST = array();
+
+ob_start();
+
+include($page);
+
+$noalias_html = ob_get_clean();
+
+$_SERVER['REQUEST_METHOD'] = 'POST';
+
+check('a firewall without aliases gets no empty select',
+	strpos($noalias_html, 'name="allowedips_alias"') === false);
+
+check('and the field keeps its own label',
+	strpos($noalias_html, 'Tunneled Networks') !== false);
+
+config_set_path('aliases/alias', $saved_aliases);
+
+write_config('Preview: restore the aliases.');
 
 fwrite(STDOUT, "\n{$pass} passed, {$fail} failed\n");
 

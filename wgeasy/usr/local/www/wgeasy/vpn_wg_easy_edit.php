@@ -316,7 +316,7 @@ $group->add(new Form_Input(
 	'text',
 	$pconfig['port']
 ))->addClass('trim')
-  ->setHelp('Listen port.')
+  ->setHelp('Listen port. Required: a client rejects an endpoint without one.')
   ->setWidth(2);
 
 $section->add($group);
@@ -448,14 +448,50 @@ $section->addInput(new Form_Select(
 		'custom'	=> gettext('Custom'))
 ))->setHelp('Preset for the networks below.');
 
-$section->addInput(new Form_Input(
+/*
+ * Aliases are offered next to the field, never posted: WireGuard has no idea
+ * what an alias is, so picking one drops its contents into the field and what
+ * gets saved is the addresses themselves.
+ */
+$alias_presets = wgeasy_get_alias_presets();
+
+$alias_options = $alias_networks = array();
+
+foreach ($alias_presets as $alias_name => $alias_info) {
+	$alias_options[$alias_name] = $alias_info['label'];
+	$alias_networks[$alias_name] = $alias_info['networks'];
+}
+
+// On its own the field carries the label; inside a group the group does
+$networks_input = new Form_Input(
 	'client_allowedips',
-	'*Tunneled Networks',
+	empty($alias_options) ? '*Tunneled Networks' : 'Tunneled Networks',
 	'text',
 	$pconfig['client_allowedips'],
 	['placeholder' => '0.0.0.0/0, ::/0', 'autocomplete' => 'off']
-))->addClass('trim')
-  ->setHelp('Networks the client routes into the tunnel. Written as <code>AllowedIPs</code> in the client file.');
+);
+
+$networks_input->addClass('trim')
+	->setHelp('Networks the client routes into the tunnel. Written as <code>AllowedIPs</code> in the client file.');
+
+if (empty($alias_options)) {
+	$section->addInput($networks_input);
+} else {
+	$group = new Form_Group('*Tunneled Networks');
+
+	$group->add($networks_input)->setWidth(6);
+
+	$group->add(new Form_Select(
+		'allowedips_alias',
+		'Aliases',
+		'',
+		array_merge(array('' => gettext('Aliases...')), $alias_options)
+	))->setHelp('Firewall aliases holding networks. Picking one adds its addresses to the field on the left. ' .
+		    '(<a href="/firewall_aliases.php">' . gettext('Aliases') . '</a>)')
+	  ->setWidth(4);
+
+	$section->add($group);
+}
 
 $group = new Form_Group('DNS Servers');
 
@@ -488,7 +524,8 @@ $section->addInput(new Form_Input(
 	$pconfig['mtu'],
 	['placeholder' => 'MTU']
 ))->addClass('trim')
-  ->setHelp("Optional. Leave blank to let the client decide. The tunnel default on this firewall is {$wgg['default_mtu']}.");
+  ->setHelp('Optional. Filled in from the tunnel when it does not run on the default of ' .
+	    "{$wgg['default_mtu']}, which is what a client assumes on its own. Leave blank to let the client decide.");
 
 $section->addInput(new Form_Checkbox(
 	'applynow',
@@ -620,6 +657,7 @@ $genkeyswarning = gettext("Overwrite the client key pair? The client file alread
 //<![CDATA[
 events.push(function() {
 	var wgeasyTunnels = <?=json_encode(wgeasy_tunnel_hints(), JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_FORCE_OBJECT)?>;
+	var wgeasyAliases = <?=json_encode($alias_networks, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_FORCE_OBJECT)?>;
 	var wgeasyDefaultAllowedIPs = <?=json_encode($wgeasyg['default_allowedips'], JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
 	var wgeasyDnsNone = <?=json_encode(WGEASY_DNS_NONE, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT)?>;
 	var wgeasyEditing = <?=$is_edit ? 'true' : 'false'?>;
@@ -894,14 +932,77 @@ events.push(function() {
 		}
 	}
 
+	/*
+	 * Splits a comma separated list into trimmed entries, dropping the empties
+	 * a trailing or doubled comma leaves behind
+	 */
+	function wgeasySplitList(value) {
+		var entries = [];
+
+		$.each(String(value == null ? '' : value).split(','), function(i, entry) {
+			entry = $.trim(entry);
+
+			if (entry.length > 0) {
+				entries.push(entry);
+			}
+		});
+
+		return entries;
+	}
+
+	/*
+	 * Adds the networks of an alias to the tunneled networks. The alias is
+	 * resolved here and now: what reaches the client file is the addresses, so
+	 * a later edit of the alias does not reach clients already handed out.
+	 */
+	function wgeasyApplyAlias() {
+		var alias = $('#allowedips_alias').val();
+
+		// The neutral prompt does nothing
+		if (alias === null || alias.length == 0 || !wgeasyAliases[alias]) {
+			return;
+		}
+
+		/*
+		 * Full tunnel already carries everything, so the alias replaces it
+		 * rather than being appended to a list that means "and also this"
+		 */
+		var entries = ($('#routing').val() == 'full') ? [] : wgeasySplitList($('#client_allowedips').val());
+
+		$.each(wgeasySplitList(wgeasyAliases[alias]), function(i, entry) {
+			if ($.inArray(entry, entries) < 0) {
+				entries.push(entry);
+			}
+		});
+
+		$('#client_allowedips').val(entries.join(', '));
+
+		// The list is no longer either of the two presets
+		$('#routing').val('custom');
+	}
+
+	/*
+	 * Everything a new client on the selected tunnel starts from, as the server
+	 * would have filled it in. Kept in one place so switching tunnels lands on
+	 * the same form a fresh page would have shown.
+	 */
 	function wgeasyUpdateTunnelDefaults() {
 		var tunnel = wgeasyTunnels[$('#tun').val()];
 
-		if (tunnel) {
-			$('#port').val(tunnel.port);
-		}
+		if (tunnel && tunnel.defaults) {
+			var defaults = tunnel.defaults;
 
-		wgeasyApplyRouting();
+			$('#endpoint').val(defaults.endpoint);
+			$('#port').val(defaults.port);
+			$('#routing').val(defaults.routing);
+			$('#client_allowedips').val(defaults.client_allowedips);
+			$('#dns').val(defaults.dns);
+			$('#dns_preset').val('');
+			$('#mtu').val(defaults.mtu);
+			$('#persistentkeepalive').val(defaults.persistentkeepalive);
+		} else {
+			wgeasyApplyRouting();
+		}
 
 		// Request the next free address on the selected tunnel
 		$.ajax({
@@ -933,6 +1034,10 @@ events.push(function() {
 
 	$('#dns_preset').change(function() {
 		wgeasyApplyDnsPreset();
+	});
+
+	$('#allowedips_alias').change(function() {
+		wgeasyApplyAlias();
 	});
 
 	// The detected list mirrors into the endpoint field; the server ignores it

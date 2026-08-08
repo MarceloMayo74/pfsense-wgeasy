@@ -250,6 +250,63 @@ function wgeasy_get_dns_presets() {
 }
 
 /*
+ * Firewall aliases that can be handed to a client as a list of networks.
+ *
+ * Returns name => array('label' => ..., 'networks' => ...), where the networks
+ * are the contents of the alias and not its name: WireGuard resolves nothing,
+ * so what ends up in the client file has to be the addresses themselves, as
+ * they are at the moment the client is created. Entries that are not an address
+ * (a hostname, or a nested alias) are dropped, and an alias left with nothing
+ * usable is not offered at all.
+ */
+function wgeasy_get_alias_presets() {
+	$a_ret = array();
+
+	foreach (config_get_path('aliases/alias', []) as $alias) {
+		// Ports and URL tables are not networks a client can route to
+		if (!in_array($alias['type'] ?? '', array('host', 'network'))) {
+			continue;
+		}
+
+		$name = trim((string) ($alias['name'] ?? ''));
+
+		if ((strlen($name) == 0) || array_key_exists($name, $a_ret)) {
+			continue;
+		}
+
+		// Alias contents are whitespace separated, one entry per address
+		$entries = preg_split('/[\s,]+/', trim((string) ($alias['address'] ?? '')), -1, PREG_SPLIT_NO_EMPTY);
+
+		$discard = array();
+
+		$addresses = wgeasy_parse_addresses(implode(',', (array) $entries), $discard);
+
+		if (empty($addresses)) {
+			continue;
+		}
+
+		$networks = wgeasy_addresses_to_line($addresses);
+
+		$notes = array();
+
+		if (!empty($alias['descr'])) {
+			$notes[] = trim((string) $alias['descr']);
+		}
+
+		// A single network is short enough to read in the list itself
+		$notes[] = (count($addresses) == 1)
+				? $networks
+				: sprintf(gettext('%d networks'), count($addresses));
+
+		$a_ret[$name] = array(
+				'label'		=> "{$name} (" . implode(', ', $notes) . ')',
+				'networks'	=> $networks);
+	}
+
+	return $a_ret;
+}
+
+/*
  * Returns the listen port configured on a given tunnel
  */
 function wgeasy_tunnel_port($tunnel_name) {
@@ -262,6 +319,27 @@ function wgeasy_tunnel_port($tunnel_name) {
 	}
 
 	return $wgg['default_port'];
+}
+
+/*
+ * Returns the MTU configured on a given tunnel when it is worth writing into a
+ * client file, or null.
+ *
+ * The default is left out on purpose: it is what every WireGuard client already
+ * assumes, so spelling it out only adds a line that has to be maintained. A
+ * tunnel that was lowered (a PPPoE WAN, a link with its own overhead) is the
+ * case that matters, and there the client has to be told.
+ */
+function wgeasy_tunnel_mtu($tunnel_name) {
+	global $wgg;
+
+	if ([$tun_idx, $tunnel, $is_new] = wg_tunnel_get_config_by_name($tunnel_name)) {
+		if (is_numericint($tunnel['mtu']) && ($tunnel['mtu'] != $wgg['default_mtu'])) {
+			return $tunnel['mtu'];
+		}
+	}
+
+	return null;
 }
 
 /*
@@ -666,30 +744,41 @@ function wgeasy_get_endpoint_candidates() {
 }
 
 /*
- * Best effort default for the endpoint remote clients dial back to
+ * Best effort default for the endpoint remote clients dial back to.
+ *
+ * Answered once per request: reaching this conclusion walks every Dynamic DNS
+ * client and every configured interface, and the form asks for it once per
+ * tunnel.
  */
 function wgeasy_guess_endpoint() {
+	// Null is a legitimate answer, so the cache starts on something else
+	static $guess = false;
+
+	if ($guess !== false) {
+		return $guess;
+	}
+
 	$candidates = wgeasy_get_endpoint_candidates();
 
 	// A Dynamic DNS hostname, if there is one, is always the best answer
 	foreach (wgeasy_get_dyndns_hostnames() as $entry) {
-		return $entry['hostname'];
+		return ($guess = $entry['hostname']);
 	}
 
 	// Otherwise the first routable interface address
 	foreach (wgeasy_get_interface_addresses() as $entry) {
 		if (!$entry['private']) {
-			return $entry['address'];
+			return ($guess = $entry['address']);
 		}
 	}
 
 	$fqdn = wgeasy_system_fqdn();
 
 	if (!empty($fqdn)) {
-		return $fqdn;
+		return ($guess = $fqdn);
 	}
 
-	return empty($candidates) ? null : array_key_first($candidates);
+	return ($guess = (empty($candidates) ? null : array_key_first($candidates)));
 }
 
 /*
@@ -1031,6 +1120,28 @@ function wgeasy_peer_store($peer) {
 }
 
 /*
+ * The client settings of the last peer this page created on a given tunnel, or
+ * an empty array when there is none.
+ *
+ * Peers are appended to the configuration, so the last one carrying a store is
+ * the most recent client handed out on that tunnel.
+ */
+function wgeasy_last_peer_store($tunnel_name) {
+	$a_ret = array();
+
+	foreach (wg_tunnel_get_peers_config($tunnel_name) as [$peer_idx, $peer, $peer_is_new]) {
+		$store = wgeasy_peer_store($peer);
+
+		if (!empty($store)) {
+			$a_ret = $store;
+		}
+	}
+
+	// Consumers of this function always expect an array type
+	return $a_ret;
+}
+
+/*
  * True when a peer carries everything needed to rebuild its client file
  */
 function wgeasy_peer_is_exportable($peer) {
@@ -1094,8 +1205,15 @@ function wgeasy_pconfig_from_peer($peer_idx) {
 		$pconfig['publickey']	= (string) $peer['publickey'];
 	}
 
+	/*
+	 * Whatever this page saved on the peer wins, a blank field included: an
+	 * existing peer opens on its own settings, never on the ones a later
+	 * client happened to get (see wgeasy_tunnel_defaults()). Only a key that
+	 * was never stored falls through to the defaults, which is the case of a
+	 * peer created by hand.
+	 */
 	foreach (array('dns', 'mtu', 'endpoint', 'port', 'routing', 'persistentkeepalive') as $key) {
-		if (isset($store[$key]) && (strlen((string) $store[$key]) > 0)) {
+		if (array_key_exists($key, $store)) {
 			$pconfig[$key] = $store[$key];
 		}
 	}
@@ -1108,11 +1226,6 @@ function wgeasy_pconfig_from_peer($peer_idx) {
 
 	if (!empty($store['allowedips'])) {
 		$pconfig['client_allowedips'] = $store['allowedips'];
-	}
-
-	// An existing peer keeps its DNS as stored, blank included
-	if (isset($store['dns'])) {
-		$pconfig['dns'] = $store['dns'];
 	}
 
 	return $pconfig;
@@ -1140,18 +1253,91 @@ function wgeasy_conf_from_peer($peer_idx) {
 				'publickey'		=> wgeasy_tunnel_publickey($peer['tun']),
 				'presharedkey'		=> $peer['presharedkey'],
 				'allowedips'		=> $store['allowedips'] ?? '',
-				'endpoint'		=> wgeasy_format_endpoint($store['endpoint'] ?? '', $store['port'] ?? ''),
+				/*
+				 * A peer stored before the port became mandatory, or one
+				 * created by hand with a dynamic endpoint, has no port of its
+				 * own. The tunnel listen port is what that client dials, and
+				 * an Endpoint without a port is refused by every client.
+				 */
+				'endpoint'		=> wgeasy_format_endpoint($store['endpoint'] ?? '',
+								empty($store['port']) ? wgeasy_tunnel_port($peer['tun']) : $store['port']),
 				'persistentkeepalive'	=> $store['persistentkeepalive'] ?? ''));
 
 	return array($client_conf, wgeasy_conf_filename($peer['descr']));
 }
 
 /*
+ * The client side settings a new peer on a given tunnel starts from.
+ *
+ * Most of it is computed from the tunnel, but the last client created here on
+ * that tunnel wins: the second phone of a household wants the same endpoint,
+ * the same networks and the same DNS as the first, and none of that can be
+ * derived from the firewall. OPNsense solves the same problem by hanging the
+ * endpoint and the DNS servers off the tunnel itself.
+ *
+ * What the tunnel already answers is never remembered: a split tunnel means
+ * "the networks behind this firewall", so it is recomputed instead of handing
+ * back the list as it stood when the last client was made.
+ */
+function wgeasy_tunnel_defaults($tun_name) {
+	global $wgeasyg;
+
+	$store = wgeasy_last_peer_store($tun_name);
+
+	// A remembered value only counts when it was actually filled in
+	$remembered = function($key) use ($store) {
+		return (isset($store[$key]) && (strlen((string) $store[$key]) > 0))
+				? (string) $store[$key]
+				: null;
+	};
+
+	$networks = wgeasy_get_tunneled_networks($tun_name);
+
+	$routing = $remembered('routing') ?? (empty($networks) ? 'full' : 'split');
+
+	switch ($routing) {
+		case 'full':
+			$client_allowedips = $wgeasyg['default_allowedips'];
+
+			break;
+
+		case 'split':
+			$client_allowedips = implode(', ', $networks);
+
+			break;
+
+		default:
+			$client_allowedips = $remembered('allowedips') ?? implode(', ', $networks);
+
+			break;
+	}
+
+	return array(
+		/*
+		 * Full tunnel routes everything here, so this firewall should also
+		 * resolve names; split tunnel keeps the client's own DNS unless the
+		 * operator picks one. A client deliberately saved without DNS servers
+		 * is remembered as such, which is why this one asks for the element
+		 * instead of its length.
+		 */
+		'dns'			=> array_key_exists('dns', $store)
+						? (string) $store['dns']
+						: (($routing == 'full') ? wgeasy_tunnel_dns($tun_name) : null),
+		'mtu'			=> $remembered('mtu') ?? wgeasy_tunnel_mtu($tun_name),
+		'routing'		=> $routing,
+		'client_allowedips'	=> $client_allowedips,
+		'endpoint'		=> $remembered('endpoint') ?? wgeasy_guess_endpoint(),
+		'port'			=> $remembered('port') ?? wgeasy_tunnel_port($tun_name),
+		'address'		=> wgeasy_next_free_address($tun_name),
+		'persistentkeepalive'	=> array_key_exists('persistentkeepalive', $store)
+						? (string) $store['persistentkeepalive']
+						: $wgeasyg['default_keepalive']);
+}
+
+/*
  * Returns the default form state, optionally seeded from a tunnel name
  */
 function wgeasy_default_pconfig($tun_name = null) {
-	global $wgeasyg;
-
 	$tun_list = wgeasy_get_tun_list();
 
 	if (is_null($tun_name) || !array_key_exists($tun_name, $tun_list)) {
@@ -1161,7 +1347,7 @@ function wgeasy_default_pconfig($tun_name = null) {
 	// A fresh client key pair, shown on the form before anything is saved
 	$keypair = wg_gen_keypair(false);
 
-	$networks = wgeasy_get_tunneled_networks($tun_name);
+	$defaults = wgeasy_tunnel_defaults($tun_name);
 
 	$pconfig = array(
 		// Empty means a new peer; an existing one carries its config index
@@ -1174,27 +1360,26 @@ function wgeasy_default_pconfig($tun_name = null) {
 		'presharedkey'		=> wg_gen_psk(),
 		'tun'			=> $tun_name,
 		'descr'			=> null,
-		'address'		=> wgeasy_next_free_address($tun_name),
+		'address'		=> $defaults['address'],
 		'dns_preset'		=> '',
-		/*
-		 * Full tunnel routes everything here, so this firewall should also
-		 * resolve names; split tunnel keeps the client's own DNS unless the
-		 * operator picks one
-		 */
-		'dns'			=> empty($networks) ? wgeasy_tunnel_dns($tun_name) : null,
-		'mtu'			=> null,
-		'routing'		=> empty($networks) ? 'full' : 'split',
-		'client_allowedips'	=> empty($networks) ? $wgeasyg['default_allowedips'] : implode(', ', $networks),
-		'endpoint'		=> wgeasy_guess_endpoint(),
-		'port'			=> wgeasy_tunnel_port($tun_name),
-		'persistentkeepalive'	=> $wgeasyg['default_keepalive']);
+		'dns'			=> $defaults['dns'],
+		'mtu'			=> $defaults['mtu'],
+		'routing'		=> $defaults['routing'],
+		'client_allowedips'	=> $defaults['client_allowedips'],
+		'endpoint'		=> $defaults['endpoint'],
+		'port'			=> $defaults['port'],
+		'persistentkeepalive'	=> $defaults['persistentkeepalive']);
 
 	return $pconfig;
 }
 
 /*
  * Per tunnel hints handed to the browser so the form can update itself without
- * a round trip
+ * a round trip.
+ *
+ * The first four are what the tunnel itself answers, which is what the routing
+ * presets are built from; 'defaults' is the whole set a new peer would start
+ * with on that tunnel, the last client included.
  */
 function wgeasy_tunnel_hints() {
 	$a_ret = array();
@@ -1204,7 +1389,8 @@ function wgeasy_tunnel_hints() {
 					'port'		=> wgeasy_tunnel_port($tun_name),
 					'dns'		=> wgeasy_tunnel_dns($tun_name),
 					'address'	=> wgeasy_next_free_address($tun_name),
-					'networks'	=> implode(', ', wgeasy_get_tunneled_networks($tun_name)));
+					'networks'	=> implode(', ', wgeasy_get_tunneled_networks($tun_name)),
+					'defaults'	=> wgeasy_tunnel_defaults($tun_name));
 	}
 
 	// Consumers of this function always expect an array type
@@ -1385,8 +1571,15 @@ function wgeasy_do_provision_post($post) {
 		$input_errors[] = "Endpoint {$pconfig['endpoint']} must be a valid IPv4 or IPv6 address or hostname.";
 	}
 
-	// Check the endpoint port
-	if (!empty($pconfig['port']) && (!ctype_digit($pconfig['port']) || !is_port($pconfig['port']))) {
+	/*
+	 * Check the endpoint port. It is not optional: wg(8) parses the Endpoint as
+	 * host:port, and a client file carrying only the host is rejected outright
+	 * ("invalid QR code" on the phone apps), so a peer must not be saved
+	 * without one.
+	 */
+	if (strlen($pconfig['port']) == 0) {
+		$input_errors[] = gettext('An endpoint port must be specified. WireGuard clients reject an endpoint without one.');
+	} elseif (!ctype_digit($pconfig['port']) || !is_port($pconfig['port'])) {
 		$input_errors[] = "Invalid endpoint port ({$pconfig['port']}).";
 	}
 

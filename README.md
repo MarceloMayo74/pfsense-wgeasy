@@ -45,9 +45,14 @@ everything it can from your firewall:
 | Allowed IPs | Next free address in the tunnel subnet |
 | Endpoint | Your Dynamic DNS hostnames, RFC 2136 entries and interface addresses, in a dropdown |
 | Endpoint port | The listen port of the selected tunnel |
-| Tunneled Networks | The subnets your DHCP server serves, plus the tunnel network |
+| Tunneled Networks | The subnets your DHCP server serves, plus the tunnel network, or a firewall alias |
 | DNS servers | The tunnel address on full tunnel, or a preset (Google, Cloudflare, Quad9, the firewall's own) |
+| MTU | The tunnel MTU, when it is not the 1420 every client already assumes |
 | Pre-shared key | Generated, and can be cleared |
+
+Whatever you typed for the last client on a tunnel is what the next one starts
+from: endpoint, DNS servers, networks, keep alive. Only the address and the
+keys are new every time.
 
 In practice: type a name, press Save, hand over the file.
 

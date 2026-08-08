@@ -66,6 +66,7 @@ function wgeasy_preview_seed() {
 	$tunnel0['addresses']['row'] = array(
 		array('address' => '10.6.0.1', 'mask' => '24', 'descr' => 'Tunnel network'));
 
+	// Lowered MTU, the case a client has to be told about (a PPPoE WAN)
 	$tunnel1 = array(
 		'name'		=> 'tun_wg1',
 		'enabled'	=> 'yes',
@@ -73,7 +74,7 @@ function wgeasy_preview_seed() {
 		'listenport'	=> '51821',
 		'privatekey'	=> $tun1['privatekey'],
 		'publickey'	=> $tun1['publickey'],
-		'mtu'		=> '1420');
+		'mtu'		=> '1412');
 
 	$tunnel1['addresses']['row'] = array(
 		array('address' => '10.7.0.1', 'mask' => '24', 'descr' => 'Sitios'),
@@ -127,6 +128,33 @@ function wgeasy_preview_seed() {
 		'lan'	=> array('enable' => '', 'range' => array('from' => '192.168.1.100', 'to' => '192.168.1.199')),
 		'opt1'	=> array('enable' => '', 'range' => array('from' => '192.168.20.100', 'to' => '192.168.20.199')),
 		'opt3'	=> array('range' => array('from' => '', 'to' => '')));
+
+	/*
+	 * Firewall aliases, core pfSense configuration. Only host and network
+	 * aliases hold something a client can route to: the port alias and the one
+	 * made of hostnames must not reach the list offered on the form.
+	 */
+	$config['aliases']['alias'] = array(
+		array(
+			'name'		=> 'redes_internas',
+			'type'		=> 'network',
+			'address'	=> '192.168.1.0/24 192.168.20.0/24',
+			'descr'		=> 'LAN e IOT'),
+		array(
+			'name'		=> 'nas',
+			'type'		=> 'host',
+			'address'	=> '192.168.1.10',
+			'descr'		=> 'Servidor de archivos'),
+		array(
+			'name'		=> 'puertos_web',
+			'type'		=> 'port',
+			'address'	=> '80 443',
+			'descr'		=> 'HTTP y HTTPS'),
+		array(
+			'name'		=> 'dominios',
+			'type'		=> 'host',
+			'address'	=> 'www.example.com',
+			'descr'		=> 'Solo nombres'));
 
 	$config['notifications']['smtp'] = array(
 		'ipaddress'		=> 'smtp.example.com',
