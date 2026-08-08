@@ -11,7 +11,8 @@ key pair yourself, paste the public key into a peer, and then write the client
 > Requires `pfSense-pkg-WireGuard`. **No file belonging to that package is
 > modified**, so it survives upgrades of the native package.
 
-Tested on pfSense CE 2.8.1 with pfSense-pkg-WireGuard 0.2.9_6.
+Tested on pfSense CE 2.8.1 with pfSense-pkg-WireGuard 0.2.9_6, and on pfSense
+CE 2.9.0-BETA (amd64) with pfSense-pkg-WireGuard 0.2.13_4.
 
 ## Screenshots
 

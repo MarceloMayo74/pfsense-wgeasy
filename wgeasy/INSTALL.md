@@ -2,9 +2,10 @@
 
 Agrega **VPN > WireGuard Easy**, una pestaña única "Easy Peers" para crear
 clientes de WireGuard y entregarles su `.conf`, sin tocar ni un archivo de
-`pfSense-pkg-WireGuard-0.2.9_6`.
+`pfSense-pkg-WireGuard`.
 
-Probado contra pfSense 2.8.1 + pfSense-pkg-WireGuard 0.2.9_6.
+Probado contra pfSense 2.8.1 + pfSense-pkg-WireGuard 0.2.9_6, y contra pfSense
+2.9.0-BETA (amd64) + pfSense-pkg-WireGuard 0.2.13_4.
 
 ## Dónde quedan los datos
 
