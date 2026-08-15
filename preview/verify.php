@@ -334,15 +334,53 @@ check('it produced its own configuration', !empty(conf_from_html($html3)));
 check('its private key differs from the first client',
 	conf_value(conf_from_html($html3), 'PrivateKey', 'Interface') !== $client_privkey);
 
-fwrite(STDOUT, "\n== 7. email delivery ==\n");
+fwrite(STDOUT, "\n== 7. the SMTP settings are read from the keys pfSense writes ==\n");
 
-$html4 = render(array(
+/*
+ * Every one of these was read from the wrong key until 0.4.3, and not one of
+ * them errored: the message simply went out unauthenticated, or with the
+ * certificate unvalidated. The names come from
+ * /usr/local/pfSense/include/www/system_advanced_notifications.inc, which is
+ * the code that writes them.
+ */
+$smtp = wgeasy_smtp_settings();
+
+check('the server is read', $smtp['host'] === 'smtp.example.com', $smtp['host']);
+
+check('the mechanism comes from authentication_mechanism', $smtp['authmech'] === 'LOGIN', $smtp['authmech']);
+
+check('SSL is on', $smtp['ssl'] === true);
+
+check('certificate validation follows the sslvalidate string', $smtp['validate'] === true);
+
+config_set_path('notifications/smtp/sslvalidate', 'disabled');
+
+check('and turning it off is actually seen', wgeasy_smtp_settings()['validate'] === false);
+
+config_set_path('notifications/smtp/sslvalidate', 'enabled');
+
+check('the port and the timeout are numbers', ($smtp['port'] === 587) && ($smtp['timeout'] === 20));
+
+// The peer description reaches the subject, so it has to survive being typed
+check('an ASCII header is left readable', wgeasy_mail_encode_header('celular-marcelo') === 'celular-marcelo');
+
+check('a header with accents is encoded RFC 2047 style',
+	wgeasy_mail_encode_header("Tel\xc3\xa9fono") === '=?UTF-8?B?' . base64_encode("Tel\xc3\xa9fono") . '?=');
+
+check('a newline in the description cannot inject a header',
+	strpos(wgeasy_mail_message('x.conf', "uno\nBcc: otro@example.com")['subject'], "\n") === false);
+
+fwrite(STDOUT, "\n== 7b. email delivery, with the file attached ==\n");
+
+$email_post = array(
 		'act'		=> 'email',
 		'confdata'	=> base64_encode($conf),
 		'confname'	=> 'celular-marcel.conf',
 		'descr'		=> 'celular-marcelo',
 		'tun'		=> 'tun_wg0',
-		'email'		=> 'marcelo@example.com'));
+		'email'		=> 'marcelo@example.com');
+
+$html4 = render($email_post);
 
 $mails = glob(WGEASY_PREVIEW_VAR . '/mail/*.eml');
 
@@ -352,12 +390,130 @@ $eml = count($mails) ? file_get_contents($mails[0]) : '';
 
 check('it is addressed to the recipient typed in the form', strpos($eml, 'To: marcelo@example.com') !== false);
 
-check('it carries the client configuration', strpos($eml, $client_privkey) !== false);
+check('it went to the configured server over SSL',
+	strpos($eml, 'X-Preview-SMTP-Host: ssl://smtp.example.com') !== false);
+
+check('it authenticated with the configured mechanism',
+	strpos($eml, "X-Preview-SMTP-Auth: 'LOGIN'") !== false);
+
+check('the certificate was validated', strpos($eml, 'X-Preview-SMTP-Validate: on') !== false);
+
+check('the description reached the subject',
+	strpos($eml, 'Subject: WireGuard client configuration: celular-marcelo') !== false);
+
+check('it is a multipart message', strpos($eml, 'multipart/mixed') !== false);
+
+check('the attachment is the same archive the download button hands over',
+	strpos($eml, 'filename="' . wgeasy_zip_filename('celular-marcel.conf') . '"') !== false);
+
+check('the message tells the reader the file is attached',
+	strpos($eml, 'is attached to this message, zipped.') !== false);
+
+/*
+ * quoted_printable_encode() only emits a hard line break when the input already
+ * has CRLF, so a body written with "\n" comes out as one long line with every
+ * break encoded as "=0A". It decodes back either way, which is exactly why this
+ * has to be checked rather than looked at.
+ */
+check('the body carries real line breaks, not encoded ones', strpos($eml, '=0A') === false);
+
+/*
+ * Decoding the attachment is the check that proves the MIME is real: a body
+ * that merely mentions a file name is what the previous version produced.
+ */
+$attachment = null;
+
+if (preg_match('#filename="celular-marcel\.zip"\r\n\r\n(.*?)\r\n--#s', $eml, $m)) {
+	$attachment = base64_decode(preg_replace('/\s+/', '', $m[1]), true);
+}
+
+check('the attached bytes decode to a ZIP archive',
+	is_string($attachment) && (substr($attachment, 0, 4) === "PK\x03\x04"));
+
+check('and the archive carries the client configuration',
+	is_string($attachment) && (strpos($attachment, $client_privkey) !== false));
+
+check('the page reports it went out attached', strpos($html4, 'zipped attachment') !== false);
+
+check('the page reports the send', strpos($html4, 'alert-success') !== false);
+
+fwrite(STDOUT, "\n== 7c. the fallback when the attachment cannot be sent ==\n");
+
+function wgeasy_clear_mail() {
+	foreach (glob(WGEASY_PREVIEW_VAR . '/mail/*.eml') as $file) {
+		@unlink($file);
+	}
+}
+
+wgeasy_clear_mail();
+
+$GLOBALS['wgeasy_preview_mail_error'] = 'stub: the attachment path was made to fail';
+
+$html4b = render($email_post);
+
+$mails = glob(WGEASY_PREVIEW_VAR . '/mail/*.eml');
+
+check('a message still goes out', count($mails) == 1);
+
+$eml_inline = count($mails) ? file_get_contents($mails[0]) : '';
+
+check('it carries the client configuration in the body',
+	strpos($eml_inline, $client_privkey) !== false);
+
+// The zip is binary bytes; what belongs in a mail body is the .conf as text
+check('the archive was not pasted into the body', strpos($eml_inline, "PK\x03\x04") === false);
+
+check('the message no longer claims there is an attachment',
+	(strpos($eml_inline, 'is included at the end of this message.') !== false)
+	&& (strpos($eml_inline, 'is attached to this message') === false));
 
 check('the system notification address was restored afterwards',
 	config_get_path('notifications/smtp/notifyemailaddress') === 'admin@example.com');
 
-check('the page reports the send', strpos($html4, 'alert-success') !== false);
+check('the page reports the send', strpos($html4b, 'alert-success') !== false);
+
+fwrite(STDOUT, "\n== 7d. a send that failed is not reported as a success ==\n");
+
+wgeasy_clear_mail();
+
+/*
+ * send_smtp_message() returns NULL when it worked and the error string when it
+ * did not, so the old "!== false" reported a refused connection as a send.
+ */
+$GLOBALS['wgeasy_preview_smtp_error'] = 'Connection refused';
+
+$html4c = render($email_post);
+
+check('no message was produced', count(glob(WGEASY_PREVIEW_VAR . '/mail/*.eml')) == 0);
+
+check('the page reports the failure', strpos($html4c, 'input-errors') !== false);
+
+check('and it shows what the server said', strpos($html4c, 'Connection refused') !== false);
+
+$GLOBALS['wgeasy_preview_smtp_error'] = null;
+
+fwrite(STDOUT, "\n== 7e. pressing Send overrides notifications being disabled ==\n");
+
+/*
+ * send_smtp_message() does nothing at all when notifications are off unless it
+ * is forced -- and it returns NULL doing it, which reads as success. This is
+ * somebody pressing Send, not an automatic notification, so it is forced.
+ */
+wgeasy_clear_mail();
+
+config_set_path('notifications/smtp/disable', true);
+
+$html4d = render($email_post);
+
+check('the message still goes out', count(glob(WGEASY_PREVIEW_VAR . '/mail/*.eml')) == 1);
+
+check('the page reports the send', strpos($html4d, 'alert-success') !== false);
+
+config_del_path('notifications/smtp/disable');
+
+$GLOBALS['wgeasy_preview_mail_error'] = null;
+
+wgeasy_clear_mail();
 
 fwrite(STDOUT, "\n== 8. a bad address is rejected ==\n");
 

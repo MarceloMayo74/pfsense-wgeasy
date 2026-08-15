@@ -63,9 +63,15 @@ from, when they were last seen, and their traffic counters.
 
 ## Getting the file onto the phone
 
-The client file is always downloaded as a `.zip`. Every WireGuard client
-accepts an archive, and a `.zip` survives being emailed or passed through a
-messenger, which a bare `.conf` often does not.
+The client file is always delivered as a `.zip`, both by the download button
+and attached to the email. Every WireGuard client accepts an archive, and a
+`.zip` survives being emailed or passed through a messenger, which a bare
+`.conf` often does not.
+
+Email goes out through the SMTP server configured under **System → Advanced →
+Notifications**; this package never asks for a mail server of its own. If the
+attachment cannot be sent, the `.conf` is included in the message body instead
+and the page says so.
 
 Worth knowing, because it surprises everyone once: **the Android app does not
 register itself as a handler for configuration files**. Tapping the file in

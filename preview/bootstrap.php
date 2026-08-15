@@ -156,15 +156,23 @@ function wgeasy_preview_seed() {
 			'address'	=> 'www.example.com',
 			'descr'		=> 'Solo nombres'));
 
+	/*
+	 * The key names are the ones system_advanced_notifications.inc writes, not
+	 * the ones the consumers make it look like: the mechanism is
+	 * 'authentication_mechanism', validation is the 'sslvalidate' string, and
+	 * there is no 'tls' key -- the page only offers SSL.
+	 */
 	$config['notifications']['smtp'] = array(
-		'ipaddress'		=> 'smtp.example.com',
-		'port'			=> '587',
-		'tls'			=> '',
-		'authentication_mech'	=> 'login',
-		'username'		=> 'pfsense@example.com',
-		'password'		=> 'notarealpassword',
-		'fromaddress'		=> 'pfsense@example.com',
-		'notifyemailaddress'	=> 'admin@example.com');
+		'ipaddress'			=> 'smtp.example.com',
+		'port'				=> '587',
+		'ssl'				=> true,
+		'sslvalidate'			=> 'enabled',
+		'timeout'			=> '20',
+		'authentication_mechanism'	=> 'LOGIN',
+		'username'			=> 'pfsense@example.com',
+		'password'			=> 'notarealpassword',
+		'fromaddress'			=> 'pfsense@example.com',
+		'notifyemailaddress'		=> 'admin@example.com');
 
 	$config['installedpackages']['wireguard']['config'] = array(
 		array(

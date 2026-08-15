@@ -1719,24 +1719,38 @@ function wgeasy_get_posted_conf($post) {
 /*
  * Reads the SMTP notification settings configured under
  * System > Advanced > Notifications
+ *
+ * The key names are the ones used by
+ * /usr/local/pfSense/include/www/system_advanced_notifications.inc, which is
+ * the code that writes them. Three of them are not what reading the consumers
+ * suggests:
+ *
+ *   - the mechanism is 'authentication_mechanism', not 'authentication_mech'.
+ *     Reading the wrong one leaves authentication permanently off, and a server
+ *     that requires it rejects the message with no hint as to why.
+ *   - 'sslvalidate' is a string of 'enabled'/'disabled', not a flag to be
+ *     probed with isset(). Asking isset() of a key that never exists turns
+ *     certificate validation always off -- weaker than what was configured,
+ *     and silently so.
+ *   - there is no 'tls' key at all. The page offers SSL and nothing else.
  */
 function wgeasy_smtp_settings() {
 	$smtp = config_get_path('notifications/smtp', []);
 
 	$settings = array(
-			'disabled'	=> isset($smtp['disable']),
+			'disabled'	=> config_path_enabled('notifications/smtp', 'disable'),
 			'host'		=> trim((string) ($smtp['ipaddress'] ?? '')),
 			'port'		=> (int) ($smtp['port'] ?? 25),
 			'timeout'	=> (int) ($smtp['timeout'] ?? 20),
-			'ssl'		=> isset($smtp['ssl']),
-			'tls'		=> isset($smtp['tls']),
-			'validate'	=> isset($smtp['ssl_validate']),
-			'authmech'	=> (string) ($smtp['authentication_mech'] ?? 'none'),
+			'ssl'		=> config_path_enabled('notifications/smtp', 'ssl'),
+			'validate'	=> ((string) ($smtp['sslvalidate'] ?? 'enabled') != 'disabled'),
+			'authmech'	=> (string) ($smtp['authentication_mechanism'] ?? ''),
 			'username'	=> (string) ($smtp['username'] ?? ''),
 			'password'	=> (string) ($smtp['password'] ?? ''),
 			'from'		=> trim((string) ($smtp['fromaddress'] ?? '')),
 			'notify'	=> trim((string) ($smtp['notifyemailaddress'] ?? '')));
 
+	// An empty From is not cosmetic: plenty of servers reject a message without one
 	if (empty($settings['from'])) {
 		$hostname = trim((string) config_get_path('system/hostname'));
 
@@ -1749,29 +1763,135 @@ function wgeasy_smtp_settings() {
 		$settings['port'] = 25;
 	}
 
+	if ($settings['timeout'] <= 0) {
+		$settings['timeout'] = 20;
+	}
+
 	return $settings;
 }
 
 /*
- * Sends the .conf as a real file attachment using the PHPMailer class pfSense
- * ships for its own notification system.
+ * Encodes a header that may carry accents, RFC 2047 style.
  *
- * Returns false when PHPMailer is unavailable or the send fails, so the caller
- * can fall back to the plain send_smtp_message() path.
+ * The subject carries the peer description exactly as a person typed it:
+ * "Marcelo's phone" goes through untouched, but a raw "Teléfono" is an invalid
+ * header and the mail client shows garbage. Pure ASCII is left alone so the
+ * message stays readable in the raw.
  */
-function wgeasy_send_via_phpmailer($to, $subject, $body, $filename, $attachment, &$error = null) {
-	$class = null;
+function wgeasy_mail_encode_header($text) {
+	$text = (string) $text;
 
-	foreach (array('PHPMailer\\PHPMailer\\PHPMailer', 'PHPMailer') as $candidate) {
-		if (class_exists($candidate)) {
-			$class = $candidate;
-
-			break;
-		}
+	if (preg_match('/^[\x20-\x7E]*$/', $text) === 1) {
+		return $text;
 	}
 
-	if (is_null($class)) {
-		$error = gettext('PHPMailer is not available.');
+	return '=?UTF-8?B?' . base64_encode($text) . '?=';
+}
+
+/*
+ * Builds a multipart message carrying the text and one attached file.
+ *
+ * Returns array('headers' => array(...), 'body' => '...') for PEAR Mail, which
+ * sends the body as given and assembles the headers from the array. Nothing is
+ * sent here: it is all text, which is what makes it testable.
+ *
+ * The text goes out quoted-printable rather than 8bit on purpose. 8bit needs
+ * the server to announce 8BITMIME, and a server that does not may bounce the
+ * message or deliver it with the accents broken; quoted-printable is pure
+ * ASCII and every server understands it.
+ *
+ * The line endings are normalised to CRLF before encoding, and that is not
+ * cosmetic: quoted_printable_encode() only emits a hard line break when the
+ * input already has one, so a body written with plain "\n" comes out with
+ * every line break encoded as a literal "=0A" instead.
+ */
+function wgeasy_mail_multipart($body, $filename, $content, $mime) {
+	$boundary = '=_wgeasy_' . bin2hex(random_bytes(16));
+
+	$headers = array(
+		'MIME-Version'	=> '1.0',
+		'Content-Type'	=> "multipart/mixed; boundary=\"{$boundary}\"");
+
+	$parts = array(
+		"--{$boundary}",
+		'Content-Type: text/plain; charset=UTF-8',
+		'Content-Transfer-Encoding: quoted-printable',
+		'',
+		quoted_printable_encode(preg_replace('/\r\n|\r|\n/', "\r\n", (string) $body)),
+		"--{$boundary}",
+		"Content-Type: {$mime}; name=\"{$filename}\"",
+		'Content-Transfer-Encoding: base64',
+		"Content-Disposition: attachment; filename=\"{$filename}\"",
+		'',
+		rtrim(chunk_split(base64_encode($content), 76, "\r\n")),
+		"--{$boundary}--",
+		'');
+
+	return array('headers' => $headers, 'body' => implode("\r\n", $parts));
+}
+
+/*
+ * Builds the subject and the body of the message.
+ *
+ * $attached changes the wording because it changes the message: on one path the
+ * file is attached and on the other it is pasted at the end, and saying
+ * "attached" when there is no attachment sends the reader hunting for something
+ * that is not there.
+ */
+function wgeasy_mail_message($conf_filename, $descr = null, $attached = true) {
+	$hostname = trim((string) config_get_path('system/hostname'));
+
+	// A newline in the subject is header injection, not a slip
+	$descr = trim(str_replace(array("\r", "\n"), ' ', (string) $descr));
+
+	$subject = ($descr === '')
+		? "WireGuard client configuration ({$hostname})"
+		: "WireGuard client configuration: {$descr}";
+
+	$where = $attached
+		? 'is attached to this message, zipped.'
+		: 'is included at the end of this message.';
+
+	$lines = array(
+			'Hello,',
+			null,
+			"The WireGuard client configuration \"{$conf_filename}\" generated on",
+			"{$hostname} {$where}",
+			null,
+			'How to use it:',
+			'  Windows / macOS : WireGuard > Add Tunnel > Import tunnel(s) from file',
+			'  Android / iOS   : WireGuard > + > Import from file or archive,',
+			'                    or scan the QR code shown on the firewall',
+			"  Linux           : save it as /usr/local/etc/wireguard/{$conf_filename}",
+			'                    and run wg-quick up',
+			null,
+			'This file contains the private key of the client. Treat it as a secret and',
+			'delete this message once the tunnel has been imported.',
+			null);
+
+	return array('subject' => $subject, 'body' => implode("\n", $lines));
+}
+
+/*
+ * Sends through PEAR Mail, attaching the file for real.
+ *
+ * PHPMailer would be the obvious way to attach, and it is what this package
+ * used to reach for. Measured on pfSense 2.9.0-BETA: PHPMailer IS NOT THERE.
+ * Not the class, not the file, nowhere on the system. What pfSense ships is
+ * PEAR Mail (/usr/local/share/pear), which is what its own send_smtp_message()
+ * uses. So the MIME is assembled by hand over the only mailer this system has.
+ *
+ * The connection parameters are built the same way send_smtp_message() builds
+ * them in /etc/inc/notices.inc, deliberately: a server that works for the
+ * firewall's own notifications has to work for this.
+ *
+ * Returns false and fills $error on failure, so the caller can fall back.
+ */
+function wgeasy_send_via_pear($to, $subject, $body, $filename, $content, $mime, &$error = null) {
+	@require_once('Mail.php');
+
+	if (!class_exists('Mail')) {
+		$error = gettext('PEAR Mail is not available on this system.');
 
 		return false;
 	}
@@ -1784,58 +1904,87 @@ function wgeasy_send_via_phpmailer($to, $subject, $body, $filename, $attachment,
 		return false;
 	}
 
+	/*
+	 * With no user or no password the message goes out unauthenticated. Sending
+	 * 'PLAIN' with an empty user is not the same thing: that is a login attempt
+	 * that fails.
+	 */
+	$auth = (empty($smtp['username']) || empty($smtp['password']))
+		? false
+		: (empty($smtp['authmech']) ? 'PLAIN' : $smtp['authmech']);
+
+	$params = array(
+		'host'		=> ($smtp['ssl'] ? 'ssl://' : '') . $smtp['host'],
+		'port'		=> $smtp['port'],
+		'auth'		=> $auth,
+		'username'	=> $auth ? $smtp['username'] : '',
+		'password'	=> $auth ? $smtp['password'] : '',
+		'localhost'	=> trim((string) config_get_path('system/hostname')) . '.'
+		                   . trim((string) config_get_path('system/domain')),
+		'timeout'	=> $smtp['timeout'],
+		'debug'		=> false,
+		'persist'	=> false);
+
+	if (!$smtp['validate']) {
+		$params['socket_options'] = array('ssl' => array(
+					'verify_peer'		=> false,
+					'verify_peer_name'	=> false));
+	}
+
+	$message = wgeasy_mail_multipart($body, $filename, $content, $mime);
+
+	$headers = array_merge(array(
+		'From'		=> $smtp['from'],
+		'To'		=> $to,
+		'Subject'	=> wgeasy_mail_encode_header($subject),
+		'Date'		=> date('r')), $message['headers']);
+
 	try {
-		$mail = new $class(true);
+		$mailer =& Mail::factory('smtp', $params);
 
-		$mail->isSMTP();
-		$mail->Host		= $smtp['host'];
-		$mail->Port		= $smtp['port'];
-		$mail->Timeout		= ($smtp['timeout'] > 0) ? $smtp['timeout'] : 20;
-		$mail->CharSet		= 'UTF-8';
+		if (!is_object($mailer) || (class_exists('PEAR') && PEAR::isError($mailer))) {
+			$error = is_object($mailer) ? $mailer->getMessage() : gettext('Could not build the mailer.');
 
-		if ($smtp['tls']) {
-			$mail->SMTPSecure = 'tls';
-		} elseif ($smtp['ssl']) {
-			$mail->SMTPSecure = 'ssl';
+			return false;
 		}
 
-		if (!$smtp['validate']) {
-			$mail->SMTPOptions = array('ssl' => array(
-						'verify_peer'		=> false,
-						'verify_peer_name'	=> false,
-						'allow_self_signed'	=> true));
+		$res = @$mailer->send($to, $headers, $message['body']);
+
+		if (class_exists('PEAR') && PEAR::isError($res)) {
+			$error = $res->getMessage();
+
+			return false;
 		}
-
-		if (($smtp['authmech'] != 'none') && !empty($smtp['username'])) {
-			$mail->SMTPAuth	= true;
-			$mail->Username	= $smtp['username'];
-			$mail->Password	= $smtp['password'];
-		}
-
-		$mail->setFrom($smtp['from']);
-		$mail->addAddress($to);
-		$mail->Subject = $subject;
-		$mail->Body = $body;
-		$mail->addStringAttachment($attachment, $filename, 'base64', 'text/plain');
-
-		return (bool) $mail->send();
 	} catch (Throwable $e) {
 		$error = $e->getMessage();
 
 		return false;
 	}
+
+	return true;
 }
 
 /*
  * Sends the .conf inline in the message body using the native pfSense
  * send_smtp_message(), which has no attachment support.
  *
- * send_smtp_message() always delivers to the address configured under
- * System > Advanced > Notifications, so the recipient is swapped in the
- * in-memory configuration for the duration of the call only. Nothing is
- * written to config.xml.
+ * This path only carries text. The zip cannot travel here -- those are binary
+ * bytes pasted into a mail body -- so what goes out is the bare .conf, which is
+ * exactly what the zip holds.
+ *
+ * Two things about send_smtp_message() that reading it quickly does not show:
+ *
+ *   - it returns NULL on success and the error STRING on failure. A "!== false"
+ *     is true for both, so a send that failed gets reported as a success.
+ *   - it bails out doing nothing when notifications are disabled, unless it is
+ *     forced. It is forced here: this is not an automatic notification, it is
+ *     somebody pressing Send.
+ *
+ * And it always writes to the address configured under Notifications, so the
+ * recipient is swapped in the IN-MEMORY configuration for the duration of the
+ * call and restored afterwards. Nothing is written to config.xml.
  */
-function wgeasy_send_via_notices($to, $subject, $body, $filename, $attachment, &$error = null) {
+function wgeasy_send_via_notices($to, $subject, $body, $filename, $text, &$error = null) {
 	if (!function_exists('send_smtp_message')) {
 		@require_once('notices.inc');
 	}
@@ -1850,7 +1999,7 @@ function wgeasy_send_via_notices($to, $subject, $body, $filename, $attachment, &
 			$body,
 			null,
 			"----- BEGIN {$filename} -----",
-			$attachment,
+			$text,
 			"----- END {$filename} -----",
 			null);
 
@@ -1861,24 +2010,39 @@ function wgeasy_send_via_notices($to, $subject, $body, $filename, $attachment, &
 	config_set_path('notifications/smtp/notifyemailaddress', $to);
 
 	try {
-		$res = send_smtp_message($message, $subject);
+		$res = send_smtp_message($message, wgeasy_mail_encode_header($subject), true);
 	} catch (Throwable $e) {
 		$error = $e->getMessage();
 
-		$res = false;
+		$res = $e->getMessage();
 	} finally {
 		// Always restore the system notification address
 		config_set_path('notifications/smtp/notifyemailaddress', $original);
 	}
 
-	return ($res !== false);
+	if (!empty($res)) {
+		$error = (string) $res;
+
+		return false;
+	}
+
+	return true;
 }
 
 /*
  * Emails a client configuration.
  *
- * A real file attachment is used when possible, otherwise the configuration is
- * delivered inline in the message body through the native notification helper.
+ * The attachment is the same .zip the download button hands over, not the bare
+ * .conf: it is the very same file by either route, and an archive survives the
+ * filters and renamings a loose .conf does not always come back from. If it
+ * cannot be attached, the .conf goes in the message body.
+ *
+ * Two paths remain, and the second one exists for a different reason than it
+ * looks: the fallback does not cover the server being down -- if it is down
+ * both fail -- it covers the MIME assembled above being wrong. It is the only
+ * path that does not depend on code of ours.
+ *
+ * Returns array('success', 'attached', 'message'); 'message' is ready to show.
  */
 function wgeasy_send_conf_email($to, $client_conf, $conf_filename, $descr = null) {
 	$to = trim((string) $to);
@@ -1891,48 +2055,46 @@ function wgeasy_send_conf_email($to, $client_conf, $conf_filename, $descr = null
 		return array('success' => false, 'attached' => false, 'message' => gettext('There is no client configuration to send.'));
 	}
 
+	/*
+	 * Checked before trying: with no server both paths fail, and the message
+	 * they would leave -- "PEAR Mail is not available" -- points at the wrong
+	 * place entirely.
+	 */
 	$smtp = wgeasy_smtp_settings();
 
 	if (empty($smtp['host'])) {
 		return array('success' => false, 'attached' => false, 'message' => gettext('SMTP is not configured. Configure it under System > Advanced > Notifications.'));
 	}
 
-	$hostname = trim((string) config_get_path('system/hostname'));
-
-	$descr = str_replace(array("\r", "\n"), ' ', (string) $descr);
-
-	$subject = empty($descr) ? "WireGuard client configuration ({$hostname})" : "WireGuard client configuration: {$descr}";
-
-	$lines = array(
-			'Hello,',
-			null,
-			"The WireGuard client configuration \"{$conf_filename}\" generated on {$hostname} is",
-			'attached to this message, or included at the end of it.',
-			null,
-			'How to use it:',
-			'  Windows / macOS : WireGuard > Add Tunnel > Import tunnel(s) from file',
-			'  Android / iOS   : WireGuard > + > Import from file or archive, or scan the QR code',
-			"  Linux           : save it as /usr/local/etc/wireguard/{$conf_filename} and run wg-quick up",
-			null,
-			'This file contains the private key of the client. Treat it as a secret and',
-			'delete this message once the tunnel has been imported.',
-			null);
-
-	$body = implode("\n", $lines);
-
 	$error = null;
 
 	// A real attachment is preferred...
-	if (wgeasy_send_via_phpmailer($to, $subject, $body, $conf_filename, $client_conf, $error)) {
-		return array('success' => true, 'attached' => true, 'message' => sprintf(gettext('Configuration sent to %s as an attachment.'), $to));
+	$message = wgeasy_mail_message($conf_filename, $descr, true);
+
+	$zip = wgeasy_build_zip(array($conf_filename => $client_conf));
+
+	if (wgeasy_send_via_pear($to, $message['subject'], $message['body'],
+	                         wgeasy_zip_filename($conf_filename), $zip,
+	                         'application/zip', $error)) {
+		return array('success' => true, 'attached' => true, 'message' => sprintf(gettext('Configuration sent to %s as a zipped attachment.'), $to));
 	}
 
-	// ...but the native notification helper always works
-	if (wgeasy_send_via_notices($to, $subject, $body, $conf_filename, $client_conf, $error)) {
-		return array('success' => true, 'attached' => false, 'message' => sprintf(gettext('Configuration sent to %s. The file was included in the message body because the native pfSense mailer does not support attachments.'), $to));
+	// ...and the fallback covers the MIME above being wrong, which is the only
+	// thing this path does not share with the other one
+	$attach_error = $error;
+
+	$message = wgeasy_mail_message($conf_filename, $descr, false);
+
+	if (wgeasy_send_via_notices($to, $message['subject'], $message['body'],
+	                            $conf_filename, $client_conf, $error)) {
+		return array('success' => true, 'attached' => false, 'message' => sprintf(gettext('Configuration sent to %s. The file was included in the message body because the attachment could not be sent.'), $to));
 	}
 
-	$hint = empty($error) ? gettext('Verify the SMTP settings under System > Advanced > Notifications.') : $error;
+	$hint = empty($error) ? $attach_error : $error;
+
+	if (empty($hint)) {
+		$hint = gettext('Verify the SMTP settings under System > Advanced > Notifications.');
+	}
 
 	return array('success' => false, 'attached' => false, 'message' => sprintf(gettext('Unable to send the configuration to %1$s. %2$s'), $to, $hint));
 }

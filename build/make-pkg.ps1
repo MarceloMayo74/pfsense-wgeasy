@@ -9,7 +9,7 @@
 
 $ErrorActionPreference = 'Stop'
 
-$version = '0.4.2'
+$version = '0.4.3'
 $name    = 'pfSense-pkg-wgeasy'
 
 $root  = Split-Path $PSScriptRoot -Parent
