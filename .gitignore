@@ -1,6 +1,6 @@
 # Third party packages kept locally as a reference while developing.
 # They belong to their own authors and are not redistributed here.
-wireguard-nativo/
+wireguard-nativo*/
 wg-export-terceros/
 *.pkg
 
